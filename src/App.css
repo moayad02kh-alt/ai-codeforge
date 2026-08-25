@@ -1,0 +1,218 @@
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-areas:
+    'topbar topbar topbar'
+    'sidebar chat workspace';
+  grid-template-columns: auto auto 1fr;
+  grid-template-rows: var(--topbar-h) 1fr;
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+/* Collapsed panels contribute no track width. */
+.app:not(.has-sidebar) .sidebar {
+  width: 0;
+  border-right: none;
+}
+
+/* ---------------- Workspace ---------------- */
+
+.workspace {
+  grid-area: workspace;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace__panes {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workspace--code .editor,
+.workspace--preview .preview {
+  flex: 1;
+}
+
+.workspace--split .editor {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.workspace--split .preview {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.workspace__divider {
+  width: 1px;
+  background: var(--line);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.workspace__divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -2px;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.workspace__divider:hover::after {
+  background: var(--brand-glow);
+}
+
+/* ---------------- Chat reopen button ---------------- */
+
+.chat-reopen {
+  position: fixed;
+  left: 14px;
+  bottom: 18px;
+  z-index: 45;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), var(--brand-lo));
+  color: #fff;
+  box-shadow: var(--shadow-glow);
+  animation: scale-in var(--t) var(--ease-spring);
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.chat-reopen:hover {
+  transform: scale(1.08);
+}
+
+/* ---------------- Mobile nav ---------------- */
+
+.mobile-nav {
+  display: none;
+}
+
+/* ================== Responsive ================== */
+
+@media (max-width: 1024px) {
+  .app {
+    grid-template-areas:
+      'topbar topbar'
+      'chat workspace';
+    grid-template-columns: auto 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-areas:
+      'topbar'
+      'workspace';
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--topbar-h) 1fr auto;
+    padding-bottom: 0;
+  }
+
+  /* One pane at a time, driven by the mobile nav. */
+  .chat {
+    grid-area: workspace;
+    display: none;
+  }
+
+  .workspace {
+    grid-area: workspace;
+    display: none;
+  }
+
+  .app[data-mobile-pane='chat'] .chat {
+    display: flex;
+  }
+
+  .app[data-mobile-pane='code'] .workspace,
+  .app[data-mobile-pane='preview'] .workspace {
+    display: flex;
+  }
+
+  /* On mobile, split view is always single-pane. */
+  .app[data-mobile-pane='code'] .preview,
+  .app[data-mobile-pane='code'] .workspace__divider {
+    display: none;
+  }
+
+  .app[data-mobile-pane='code'] .editor {
+    flex: 1;
+  }
+
+  .app[data-mobile-pane='preview'] .editor,
+  .app[data-mobile-pane='preview'] .workspace__divider {
+    display: none;
+  }
+
+  .app[data-mobile-pane='preview'] .preview {
+    flex: 1;
+  }
+
+  .chat-reopen {
+    display: none;
+  }
+
+  .mobile-nav {
+    grid-column: 1 / -1;
+    display: flex;
+    height: 54px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    z-index: 35;
+  }
+
+  .mobile-nav__item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--text-ghost);
+    font-size: 10px;
+    font-weight: 550;
+    position: relative;
+    transition: color var(--t-fast) var(--ease);
+  }
+
+  .mobile-nav__item.is-active {
+    color: var(--brand-hi);
+  }
+
+  .mobile-nav__item.is-active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 26px;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+    background: var(--brand);
+  }
+
+  .mobile-nav__item:active {
+    transform: scale(0.94);
+  }
+
+  /* Toast must clear the mobile nav. */
+  .toast {
+    bottom: 68px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --topbar-h: 48px;
+  }
+}

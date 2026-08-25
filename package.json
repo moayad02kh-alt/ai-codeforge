@@ -1,0 +1,32 @@
+{
+  "name": "codeforge-ai",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "vite",
+    "server": "node server/index.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:agent": "vite-node scripts/test-agent.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vite-node": "^6.0.0"
+  },
+  "type": "module"
+}
