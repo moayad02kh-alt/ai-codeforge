@@ -1,0 +1,293 @@
+.topbar {
+  grid-area: topbar;
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 0 10px;
+  background: linear-gradient(180deg, rgba(18, 21, 30, 0.96), rgba(12, 14, 20, 0.96));
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(16px);
+  z-index: 40;
+  position: relative;
+}
+
+/* Subtle top highlight for a premium edge */
+.topbar::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(124, 122, 255, 0.35),
+    rgba(52, 211, 238, 0.22),
+    transparent
+  );
+  opacity: 0.7;
+}
+
+.topbar__left,
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar__right {
+  flex-shrink: 0;
+}
+
+.topbar__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line-strong);
+  margin: 0 2px;
+}
+
+/* ---------------- Brand ---------------- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 2px;
+  flex-shrink: 0;
+}
+
+.brand__mark {
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--brand), var(--brand-lo) 60%, #4338ca);
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(91, 88, 232, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.brand__name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
+}
+
+.brand__ai {
+  background: linear-gradient(100deg, var(--brand-hi), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------------- Project name ---------------- */
+
+.topbar__project {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 240px;
+  padding: 5px 10px;
+  border-radius: var(--r-md);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.topbar__project:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.topbar__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex-shrink: 0;
+  animation: pulse-soft 2.2s ease-in-out infinite;
+}
+
+.topbar__rename {
+  width: 210px;
+  padding: 5px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-focus);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ---------------- Badge ---------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
+  border-radius: var(--r-full);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.badge--sim {
+  background: var(--warn-wash);
+  color: var(--warn);
+  border: 1px solid rgba(251, 191, 36, 0.24);
+}
+
+.badge--live {
+  background: var(--ok-wash);
+  color: var(--ok);
+  border: 1px solid rgba(52, 211, 153, 0.26);
+}
+
+/* ---------------- Buttons ---------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn--ghost {
+  background: var(--bg-elevated);
+  border-color: var(--line);
+}
+
+.btn--ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.btn--primary {
+  background: linear-gradient(135deg, var(--brand), var(--brand-lo));
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(91, 88, 232, 0.34);
+}
+
+.btn--primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn--danger {
+  background: var(--err-wash);
+  color: var(--err);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.btn--danger:hover {
+  background: rgba(248, 113, 113, 0.2);
+}
+
+.topbar__icon-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  color: var(--text-dim);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.topbar__icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.topbar__hamburger {
+  display: none;
+}
+
+/* ---------------- Segmented control ---------------- */
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.segmented__item {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-faint);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.segmented__item:hover {
+  color: var(--text-dim);
+}
+
+.segmented__item.is-active {
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------------- Responsive ---------------- */
+
+@media (max-width: 1180px) {
+  .btn__label {
+    display: none;
+  }
+  .btn {
+    padding: 0 9px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .topbar__hamburger {
+    display: grid;
+  }
+  .segmented {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .brand__name {
+    display: none;
+  }
+  .topbar__divider {
+    display: none;
+  }
+  .topbar__project {
+    max-width: 130px;
+    font-size: 12.5px;
+  }
+  .badge {
+    display: none;
+  }
+}
