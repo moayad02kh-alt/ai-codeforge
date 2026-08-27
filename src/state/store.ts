@@ -309,6 +309,12 @@ export const useStore = create<AppState>((set, get) => ({
     bus.on('console:entry', ({ entry: e }) =>
       set((s) => ({ consoleEntries: [...s.consoleEntries.slice(-299), e] })),
     );
+    bus.on('run:started', ({ run }) =>
+      set(() => ({
+        activeRun: run,
+        isAgentBusy: true,
+      })),
+    );
     bus.on('run:step', ({ step }) =>
       set((s) =>
         s.activeRun
@@ -321,6 +327,19 @@ export const useStore = create<AppState>((set, get) => ({
             }
           : {},
       ),
+    );
+    bus.on('run:log', ({ stepId, line }) =>
+      set((s) => {
+        if (!s.activeRun) return {};
+        return {
+          activeRun: {
+            ...s.activeRun,
+            steps: s.activeRun.steps.map((st) =>
+              st.id === stepId ? { ...st, logs: [...st.logs, line] } : st,
+            ),
+          },
+        };
+      }),
     );
     bus.on('run:plan', ({ plan }) =>
       set((s) => (s.activeRun ? { activeRun: { ...s.activeRun, plan } } : {})),
@@ -349,6 +368,12 @@ export const useStore = create<AppState>((set, get) => ({
     );
     bus.on('run:changes', ({ changes }) =>
       set((s) => (s.activeRun ? { activeRun: { ...s.activeRun, changes } } : {})),
+    );
+    bus.on('run:finished', ({ run }) =>
+      set((s) => ({
+        // Keep the finished run visible so timeline shows completed state
+        activeRun: s.activeRun?.id === run.id ? run : s.activeRun,
+      })),
     );
     bus.on('preview:updated', ({ html }) =>
       set((s) => ({ previewHtml: html, previewKey: s.previewKey + 1 })),

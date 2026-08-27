@@ -108,14 +108,56 @@ export class LLMProvider implements AIProvider {
 
   /** Checks whether the backend has a provider configured. */
   static async probe(baseUrl = '/api/agent', signal?: AbortSignal): Promise<BackendStatus | null> {
+    // Use a short timeout for the probe so the UI doesn't hang on "Failed to fetch"
+    const timeout = 6000;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeout);
+    const combinedSignal = signal
+      ? (() => {
+          // Merge external signal with our timeout signal
+          if (signal.aborted) ctrl.abort();
+          else signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+          return ctrl.signal;
+        })()
+      : ctrl.signal;
+
     try {
-      const res = await fetch(`${baseUrl}/status`, { signal });
-      if (!res.ok) return null;
-      return (await res.json()) as BackendStatus;
-    } catch {
-      // Backend not running — caller falls back to the simulation.
+      const res = await fetch(`${baseUrl}/status`, {
+        signal: combinedSignal,
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        // 404/503 means backend reachable but not configured -> treat as not live, fallback to sim
+        // 5xx or 4xx still means backend exists, just not ready
+        return null;
+      }
+      const json = (await res.json().catch(() => null)) as BackendStatus | null;
+      return json && typeof json.configured === 'boolean' ? json : null;
+    } catch (err) {
+      clearTimeout(timer);
+      const e = err as Error;
+      // Network errors, timeouts, CORS, offline -> fallback to simulation silently
+      // Log only in dev for debugging
+      if (e?.name !== 'AbortError') {
+        console.debug('[CodeForge] Backend probe failed, using simulated mode:', e?.message);
+      }
       return null;
     }
+  }
+
+  private isNetworkError(err: unknown): boolean {
+    const msg = (err as Error)?.message?.toLowerCase() ?? '';
+    const name = (err as Error)?.name ?? '';
+    return (
+      name === 'TypeError' ||
+      msg.includes('failed to fetch') ||
+      msg.includes('networkerror') ||
+      msg.includes('load failed') ||
+      msg.includes('fetch') ||
+      name === 'NetworkError'
+    );
   }
 
   private async chat(
@@ -123,28 +165,83 @@ export class LLMProvider implements AIProvider {
     messages: PromptMessage[],
     signal?: AbortSignal,
   ): Promise<ChatResponse> {
-    const res = await fetch(`${this.baseUrl}/${route}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(this.options.headers ?? {}) },
-      body: JSON.stringify({
-        messages,
-        model: this.options.model,
-        temperature: this.options.temperature ?? 0.3,
-        provider: this.options.provider,
-      }),
-      signal,
-    });
-
-    const data = (await res.json().catch(() => ({}))) as ChatResponse & {
-      error?: string;
-      code?: string;
+    const makeRequest = async (): Promise<Response> => {
+      return await fetch(`${this.baseUrl}/${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(this.options.headers ?? {}) },
+        body: JSON.stringify({
+          messages,
+          model: this.options.model,
+          temperature: this.options.temperature ?? 0.3,
+          provider: this.options.provider,
+        }),
+        signal,
+      });
     };
 
+    let res: Response;
+    try {
+      res = await makeRequest();
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') throw err;
+      if (this.isNetworkError(err)) {
+        throw Object.assign(
+          new Error(
+            `Cannot reach AI backend at ${this.baseUrl}/${route} — the server may be down, restarting, or blocked by network/CORS. ` +
+              `If you're on Render, wait 20-30s for the service to wake up and try again. The app will continue in simulated mode if the backend stays unreachable. ` +
+              `Original: ${(err as Error).message}`,
+          ),
+          { code: 'NETWORK_ERROR', cause: err },
+        );
+      }
+      throw err;
+    }
+
+    let data: ChatResponse & { error?: string; code?: string; hint?: string };
+    try {
+      data = (await res.json()) as typeof data;
+    } catch {
+      data = {} as typeof data;
+    }
+
     if (!res.ok) {
-      throw new Error(data.error || `Backend returned ${res.status}`);
+      const code = (data as { code?: string })?.code ?? '';
+      // Provider not configured -> clear message so orchestrator can fallback or show hint
+      if (res.status === 503 || code === 'PROVIDER_NOT_CONFIGURED') {
+        throw Object.assign(
+          new Error(
+            data.error ||
+              'No AI provider is configured on the server. The app is running in simulated mode. Set an API key in .env (or Render env vars) to enable live mode.',
+          ),
+          { code: 'PROVIDER_NOT_CONFIGURED', status: 503 },
+        );
+      }
+      if (res.status === 429 || code === 'RATE_LIMITED') {
+        throw Object.assign(
+          new Error(
+            data.error || 'Too many requests — the AI backend is rate-limited. Please wait a minute and try again.',
+          ),
+          { code: 'RATE_LIMITED', status: 429 },
+        );
+      }
+      if (res.status === 504 || code === 'UPSTREAM_TIMEOUT') {
+        throw Object.assign(
+          new Error(
+            data.error ||
+              'The AI model took too long to respond and the request timed out. Please try again with a shorter prompt or try again in a moment.',
+          ),
+          { code: 'UPSTREAM_TIMEOUT', status: 504 },
+        );
+      }
+      throw Object.assign(new Error(data.error || `Backend returned ${res.status}: ${res.statusText}`), {
+        code: code || `HTTP_${res.status}`,
+        status: res.status,
+      });
     }
     if (!data.text) {
-      throw new Error('Model returned an empty response');
+      throw Object.assign(new Error('Model returned an empty response — please try again.'), {
+        code: 'EMPTY_RESPONSE',
+      });
     }
     return data;
   }

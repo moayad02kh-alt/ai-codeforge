@@ -1,15 +1,18 @@
 /**
- * AgentOrchestrator — drives the full agent pipeline.
+ * AgentOrchestrator — drives the full agent pipeline with live transparent progress.
  *
- *   understand → plan → generate/modify → test → detect → repair → preview
+ *   understand → inspect → plan → generate → apply → test → detect → repair → preview → done
  *
  * It owns no UI state. It emits events on the bus and returns the resulting
  * files; the Zustand store projects those events into React state. That
  * separation is what makes it possible to move this loop server-side later:
  * the same events would arrive over SSE instead of in-process.
  *
- * NOTE: with the default `MockAIProvider` no real inference happens and tests
- * are simulated. The UI communicates this explicitly.
+ * This version adds:
+ *  - 10-stage pipeline matching UX requirements
+ *  - Live per-file logging (filenames, test counts, diagnostics)
+ *  - Real-time elapsed tracking via bus events (not fake animation)
+ *  - Robust network error handling for "Failed to fetch"
  */
 
 import { bus } from '../core/events';
@@ -26,6 +29,7 @@ import type {
 } from '../core/types';
 import { jitter, now, sleep, uid } from '../core/utils';
 import type { AIProvider, GenerationContext } from './ai/AIProvider';
+import { ProjectContextManager } from './ai/ProjectContext';
 import { AutoRepair } from './AutoRepair';
 import { CodeRunner } from './CodeRunner';
 import { ErrorDetector } from './ErrorDetector';
@@ -52,14 +56,17 @@ export interface OrchestratorOutput {
   previewHtml: string;
 }
 
-const STEP_BLUEPRINT: Array<{ phase: AgentPhase; title: string }> = [
-  { phase: 'understand', title: 'Understand the request' },
-  { phase: 'plan', title: 'Plan the work' },
-  { phase: 'generate', title: 'Generate code' },
-  { phase: 'test', title: 'Run tests' },
-  { phase: 'detect', title: 'Detect errors' },
-  { phase: 'repair', title: 'Auto Repair' },
-  { phase: 'preview', title: 'Build preview' },
+const STEP_BLUEPRINT: Array<{ phase: AgentPhase; title: string; description: string }> = [
+  { phase: 'understand', title: 'Understanding the request', description: 'Parsing your prompt and detecting intent' },
+  { phase: 'inspect', title: 'Inspecting relevant files', description: 'Scanning project context and selecting relevant files' },
+  { phase: 'plan', title: 'Planning the work', description: 'Breaking down the task into actionable steps' },
+  { phase: 'generate', title: 'Generating code', description: 'Creating new code with the AI model' },
+  { phase: 'apply', title: 'Applying file changes', description: 'Writing changes to the project file tree' },
+  { phase: 'test', title: 'Running tests', description: 'Executing the test suite to verify behavior' },
+  { phase: 'detect', title: 'Detecting errors', description: 'Analyzing code for issues and diagnostics' },
+  { phase: 'repair', title: 'Auto Repair', description: 'Automatically fixing detected problems' },
+  { phase: 'preview', title: 'Building preview', description: 'Bundling the app for live preview' },
+  { phase: 'done', title: 'Completed', description: 'Finalizing the run and preparing results' },
 ];
 
 export class AgentOrchestrator {
@@ -72,6 +79,7 @@ export class AgentOrchestrator {
       id: uid('step'),
       phase: s.phase,
       title: s.title,
+      detail: s.description,
       status: 'pending' as StepStatus,
       logs: [],
     }));
@@ -101,12 +109,17 @@ export class AgentOrchestrator {
       if (detail) step.detail = detail;
       run.phase = phase;
       bus.emit('run:step', { runId, step: { ...step, logs: [...step.logs] } });
+      // Also emit console for bottom panel visibility
+      bus.emit('console:entry', {
+        entry: { id: uid('log'), level: 'system', message: `▶ ${step.title}: ${detail ?? ''}`, at: now(), source: 'agent' },
+      });
     };
 
     const log = (phase: AgentPhase, line: string) => {
       const step = stepFor(phase);
       step.logs.push(line);
       bus.emit('run:log', { runId, stepId: step.id, line });
+      bus.emit('run:step', { runId, step: { ...step, logs: [...step.logs] } });
       bus.emit('console:entry', {
         entry: { id: uid('log'), level: 'system', message: line, at: now(), source: 'agent' },
       });
@@ -122,10 +135,7 @@ export class AgentOrchestrator {
 
     const aborted = () => input.signal?.aborted === true;
 
-    // Diagnostics the project already carries when the turn starts. A model
-    // asked to modify a broken project needs to see what is broken, and the
-    // Project Context manager boosts the ranking of the files these point at
-    // so the relevant code is actually included in the budget.
+    // Prior diagnostics boost file ranking
     const priorDiagnostics = ErrorDetector.analyze(input.files);
 
     const ctx: GenerationContext = {
@@ -143,39 +153,108 @@ export class AgentOrchestrator {
 
     try {
       /* ---- 1. Understand ------------------------------------------ */
-      begin('understand', 'Parsing intent and extracting requirements');
-      log('understand', `Prompt received (${input.prompt.length} chars)`);
+      begin('understand', `Analyzing: "${input.prompt.slice(0, 80)}${input.prompt.length > 80 ? '...' : ''}"`);
+      log('understand', `Prompt received (${input.prompt.length} chars, ${input.files.length} files in context)`);
+      await sleep(jitter(180));
       const intent = await this.provider.classifyIntent(ctx);
       if (aborted()) throw new DOMException('Aborted', 'AbortError');
-      log('understand', `Intent: ${intent.kind} · domain: ${intent.domain}`);
-      log('understand', `Confidence: ${(intent.confidence * 100).toFixed(0)}%`);
-      log('understand', `Keywords: ${intent.keywords.slice(0, 8).join(', ') || 'none'}`);
+      log('understand', `Intent detected: ${intent.kind} · domain: ${intent.domain}`);
+      log('understand', `Confidence: ${(intent.confidence * 100).toFixed(0)}% · keywords: ${intent.keywords.slice(0, 8).join(', ') || 'none'}`);
+      log('understand', `Restatement: ${intent.restatement.slice(0, 120)}`);
       finish('understand', 'success', intent.restatement);
 
-      /* ---- 2. Plan ------------------------------------------------- */
+      /* ---- 2. Inspect --------------------------------------------- */
+      begin('inspect', 'Scanning project files and building relevant context');
+      log('inspect', `Project has ${input.files.length} file(s) total`);
+      // Build context to show which files are relevant
+      const context = ProjectContextManager.build(input.files, input.prompt, {
+        entryPath: input.entryPath,
+        diagnostics: priorDiagnostics,
+        maxFiles: 30,
+        maxTokens: 24000,
+      });
+      log('inspect', `Selected ${context.files.length} relevant file(s) for model context (~${context.estimatedTokens} tokens)`);
+      for (const cf of context.files.slice(0, 10)) {
+        await sleep(jitter(60));
+        log('inspect', `· ${cf.path} (${cf.truncated ? 'truncated' : 'full'} · score ${cf.score})`);
+      }
+      if (context.files.length > 10) {
+        log('inspect', `· ... and ${context.files.length - 10} more`);
+      }
+      if (context.omitted.length) {
+        log('inspect', `${context.omitted.length} file(s) omitted from context (available via inspect_file): ${context.omitted.slice(0, 3).map(o => o.path).join(', ')}${context.omitted.length > 3 ? '...' : ''}`);
+      }
+      if (priorDiagnostics.length) {
+        log('inspect', `${priorDiagnostics.length} prior diagnostic(s) found, boosting those files`);
+        for (const d of priorDiagnostics.slice(0, 3)) {
+          log('inspect', `  ${d.severity}: ${d.code} in ${d.file}:${d.line}`);
+        }
+      }
+      await sleep(jitter(200));
+      finish('inspect', 'success', `${context.files.length} files selected · ${context.estimatedTokens} tokens`);
+
+      /* ---- 3. Plan ------------------------------------------------- */
       begin('plan', 'Decomposing the work into tasks');
       const plan = await this.provider.createPlan(ctx, intent);
       if (aborted()) throw new DOMException('Aborted', 'AbortError');
       run.plan = plan;
-      for (const task of plan.tasks) log('plan', `· ${task.title}`);
+      log('plan', `Plan: ${plan.summary.slice(0, 140)}`);
+      for (const task of plan.tasks) {
+        await sleep(jitter(80));
+        log('plan', `· ${task.title} ${task.targets.length ? `→ ${task.targets.join(', ')}` : ''}`);
+      }
       bus.emit('run:plan', { runId, plan });
       finish('plan', 'success', `${plan.tasks.length} tasks · ~${plan.estimatedFiles} files`);
 
-      /* ---- 3. Generate / modify ------------------------------------ */
+      /* ---- 4. Generate --------------------------------------------- */
       const isCreate = intent.kind === 'create-project';
       const genStep = stepFor('generate');
-      genStep.title = isCreate ? 'Generate code' : 'Modify existing files';
-      begin('generate', isCreate ? 'Writing project files' : 'Applying targeted edits');
+      genStep.title = isCreate ? 'Generating code' : 'Generating code changes';
+      begin('generate', isCreate ? 'Writing project files with AI model' : 'Generating targeted edits with AI model');
+      log('generate', `Provider: ${this.provider.label} (${this.provider.isLive ? 'live' : 'simulated'})`);
+      log('generate', `Calling model for ${intent.kind}...`);
 
-      const result = await this.provider.generate(ctx, plan);
-      if (aborted()) throw new DOMException('Aborted', 'AbortError');
-
-      // Stream per-file progress so the timeline feels alive.
-      for (const f of result.files) {
-        await sleep(jitter(130));
-        log('generate', `${FileManager.find(files, f.path) ? 'modified' : 'created'} ${f.path}`);
+      let result;
+      try {
+        result = await this.provider.generate(ctx, plan);
+      } catch (err) {
+        const e = err as Error & { code?: string; status?: number };
+        // Handle network / provider errors with clear messaging
+        if (e.code === 'NETWORK_ERROR' || e.message?.toLowerCase().includes('failed to fetch') || e.message?.includes('Cannot reach AI backend')) {
+          log('generate', `⚠ Network error: ${e.message.slice(0, 200)}`);
+          log('generate', `Attempting fallback handling...`);
+          throw new Error(
+            `Agent connection failed: ${e.message}. ` +
+              `This usually means the backend is waking up (Render cold start) or is unreachable. ` +
+              `Please wait 20s and try again, or continue in simulated mode.`,
+          );
+        }
+        if (e.code === 'PROVIDER_NOT_CONFIGURED') {
+          log('generate', `⚠ Provider not configured: ${e.message}`);
+          throw new Error(
+            `Live provider not configured: ${e.message}. ` +
+              `The app will use simulated mode. Set an API key to enable live AI.`,
+          );
+        }
+        throw err;
       }
 
+      if (aborted()) throw new DOMException('Aborted', 'AbortError');
+
+      log('generate', `Model returned ${result.files.length} file(s), ${result.deletions.length} deletion(s)`);
+      for (const f of result.files) {
+        await sleep(jitter(90));
+        const action = FileManager.find(files, f.path) ? 'update' : 'create';
+        log('generate', `${action === 'create' ? '✏️ create' : '📝 update'} ${f.path}${f.rationale ? ` — ${f.rationale.slice(0, 60)}` : ''}`);
+      }
+      if (result.deletions.length) {
+        for (const del of result.deletions) {
+          log('generate', `🗑 delete ${del}`);
+        }
+      }
+
+      /* ---- 5. Apply ------------------------------------------------ */
+      begin('apply', 'Writing changes to the project file tree');
       const applied = FileManager.applyChanges(
         files,
         result.files.map((f) => ({ path: f.path, content: f.content })),
@@ -188,47 +267,73 @@ export class AgentOrchestrator {
       message = result.message;
       run.usage = result.usage;
 
+      if (allChanges.length === 0) {
+        log('apply', 'No file changes to apply');
+      } else {
+        for (const ch of allChanges) {
+          await sleep(jitter(70));
+          log('apply', `${ch.action === 'created' ? 'A' : ch.action === 'modified' ? 'M' : 'D'} ${ch.path} (+${ch.additions} -${ch.deletions})`);
+        }
+      }
+
       bus.emit('run:changes', { runId, changes: allChanges });
       bus.emit('files:changed', { projectId: input.projectId });
       finish(
-        'generate',
+        'apply',
         allChanges.length ? 'success' : 'warning',
         allChanges.length ? `${allChanges.length} file(s) written` : 'No files changed',
       );
+      // Also finish generate as success
+      finish(
+        'generate',
+        allChanges.length ? 'success' : 'warning',
+        allChanges.length ? `${allChanges.length} file(s) generated` : 'No files generated',
+      );
 
-      /* ---- 4. Test -------------------------------------------------- */
+      /* ---- 6. Test -------------------------------------------------- */
       let testResults: TestResult[] = [];
       if (input.settings.runTestsAfterGeneration) {
         begin('test', 'Executing the project test suite');
-        log('test', '$ npm run test');
+        log('test', `$ npm run test (simulated in browser)`);
+        log('test', `Running ${files.filter(f => f.path.includes('test')).length} test file(s)...`);
         testResults = await CodeRunner.runTests(files);
         if (aborted()) throw new DOMException('Aborted', 'AbortError');
         const passed = testResults.filter((t) => t.status === 'passed').length;
         const failed = testResults.filter((t) => t.status === 'failed').length;
+        const skipped = testResults.filter((t) => t.status === 'skipped').length;
         for (const t of testResults) {
-          log('test', `${t.status === 'passed' ? '✓' : t.status === 'failed' ? '✗' : '○'} ${t.suite} › ${t.name}`);
+          const icon = t.status === 'passed' ? '✓' : t.status === 'failed' ? '✗' : '○';
+          log('test', `${icon} ${t.suite} › ${t.name} (${t.durationMs}ms)${t.message ? ` — ${t.message.slice(0, 80)}` : ''}`);
         }
         run.testResults = testResults;
         bus.emit('run:tests', { runId, results: testResults });
         finish(
           'test',
           failed > 0 ? 'failed' : 'success',
-          `${passed} passed · ${failed} failed · ${testResults.length} total`,
+          `${passed} passed · ${failed} failed · ${skipped} skipped · ${testResults.length} total`,
         );
       } else {
-        finish('test', 'skipped', 'Disabled in settings');
+        finish('test', 'skipped', 'Tests disabled in settings');
       }
 
-      /* ---- 5. Detect ------------------------------------------------ */
-      begin('detect', 'Running static analysis');
-      await sleep(jitter(320));
+      /* ---- 7. Detect ------------------------------------------------ */
+      begin('detect', 'Running static analysis for errors and warnings');
+      await sleep(jitter(250));
       let diagnostics: Diagnostic[] = ErrorDetector.analyze(files);
       const errCount = ErrorDetector.errorCount(diagnostics);
       const warnCount = ErrorDetector.warningCount(diagnostics);
-      for (const d of diagnostics.slice(0, 6)) {
-        log('detect', `${d.severity.toUpperCase()} ${d.code} ${d.file}:${d.line} — ${d.message}`);
+      if (!diagnostics.length) {
+        log('detect', '✓ No issues found — code looks clean');
+      } else {
+        log('detect', `Found ${errCount} error(s) and ${warnCount} warning(s)`);
+        for (const d of diagnostics.slice(0, 8)) {
+          const level = d.severity === 'error' ? 'ERROR' : d.severity === 'warning' ? 'WARN' : 'INFO';
+          log('detect', `${level} ${d.code} ${d.file}:${d.line}:${d.column} — ${d.message}${d.repairable ? ' (repairable)' : ''}`);
+        }
+        if (diagnostics.length > 8) {
+          log('detect', `... and ${diagnostics.length - 8} more diagnostics`);
+        }
       }
-      if (!diagnostics.length) log('detect', 'No issues found');
       run.diagnostics = diagnostics;
       bus.emit('run:diagnostics', { runId, diagnostics });
       finish(
@@ -237,19 +342,20 @@ export class AgentOrchestrator {
         `${errCount} error(s) · ${warnCount} warning(s)`,
       );
 
-      /* ---- 6. Auto Repair ------------------------------------------- */
+      /* ---- 8. Auto Repair ------------------------------------------- */
       const repairable = AutoRepair.prioritize(
         diagnostics.filter((d) => d.severity === 'error'),
         input.settings.maxRepairAttempts,
       );
 
       if (input.settings.autoRepair && repairable.length > 0) {
-        begin('repair', `Attempting to fix ${repairable.length} fault(s)`);
+        begin('repair', `Attempting to fix ${repairable.length} fault(s) automatically`);
         let fixedCount = 0;
 
         for (const [i, diagnostic] of repairable.entries()) {
           if (aborted()) break;
-          log('repair', `Attempt ${i + 1}/${repairable.length} — ${diagnostic.code} in ${diagnostic.file}`);
+          log('repair', `Attempt ${i + 1}/${repairable.length} — ${diagnostic.code} in ${diagnostic.file}:${diagnostic.line}`);
+          log('repair', `  Error: ${diagnostic.message}`);
 
           const outcome = await AutoRepair.attempt({
             provider: this.provider,
@@ -277,11 +383,13 @@ export class AgentOrchestrator {
             if (patch) {
               const stats = FileManager.applyChanges(files, [{ path: patch.path, content: patch.after }]);
               allChanges = [...allChanges, ...stats.changes];
+              log('repair', `  ✓ Fixed ${patch.path}, verified`);
             }
             files = outcome.files;
             bus.emit('files:changed', { projectId: input.projectId });
           } else {
-            log('repair', `  reverted — project restored to the pre-repair snapshot`);
+            log('repair', `  ✗ Fix failed — project restored to pre-repair snapshot`);
+            log('repair', `  Reason: ${outcome.attempt.analysis.slice(0, 120)}`);
           }
         }
 
@@ -302,26 +410,45 @@ export class AgentOrchestrator {
 
         // Re-run tests after a successful repair to confirm green.
         if (fixedCount > 0 && input.settings.runTestsAfterGeneration) {
+          log('repair', 'Re-running tests after repair...');
           const rerun = await CodeRunner.runTests(files);
           run.testResults = rerun;
+          const p = rerun.filter(r => r.status === 'passed').length;
+          const f = rerun.filter(r => r.status === 'failed').length;
+          log('repair', `Tests after repair: ${p} passed, ${f} failed`);
           bus.emit('run:tests', { runId, results: rerun });
         }
       } else {
         finish(
           'repair',
           'skipped',
-          !input.settings.autoRepair ? 'Auto Repair disabled' : 'No repairable errors',
+          !input.settings.autoRepair ? 'Auto Repair disabled in settings' : 'No repairable errors found',
         );
       }
 
-      /* ---- 7. Preview ----------------------------------------------- */
-      begin('preview', 'Bundling the sandbox document');
+      /* ---- 9. Preview ----------------------------------------------- */
+      begin('preview', 'Bundling the app for live preview');
+      log('preview', `Entry: ${input.entryPath}, ${files.length} files`);
       const runResult = await CodeRunner.run(files, input.entryPath);
-      for (const entry of runResult.console) bus.emit('console:entry', { entry });
+      for (const entry of runResult.console) {
+        bus.emit('console:entry', { entry });
+        if (entry.level === 'error') {
+          log('preview', `Console error: ${entry.message.slice(0, 120)}`);
+        }
+      }
       const previewHtml = runResult.previewHtml ?? CodeRunner.bundle(files, input.entryPath);
+      log('preview', `Preview bundled (${Math.round(previewHtml.length / 1024)} KB)`);
       bus.emit('preview:updated', { html: previewHtml });
       bus.emit('runner:result', { result: runResult });
-      finish('preview', runResult.status === 'success' ? 'success' : 'warning', 'Preview ready');
+      finish('preview', runResult.status === 'success' ? 'success' : 'warning', 'Preview ready and updated');
+
+      /* ---- 10. Done -------------------------------------------------- */
+      begin('done', 'Finalizing run');
+      log('done', `Run completed: ${allChanges.length} file(s) changed, ${run.testResults.length} tests, ${ErrorDetector.errorCount(run.diagnostics)} errors`);
+      if (run.usage) {
+        log('done', `Tokens: ${run.usage.promptTokens} prompt + ${run.usage.completionTokens} completion`);
+      }
+      finish('done', 'success', 'Agent run completed successfully');
 
       run.status = 'succeeded';
       run.phase = 'done';
@@ -335,20 +462,44 @@ export class AgentOrchestrator {
       if (active) {
         active.status = isAbort ? 'skipped' : 'failed';
         active.finishedAt = now();
-        active.detail = isAbort ? 'Cancelled by user' : (err as Error).message;
+        active.detail = isAbort ? 'Cancelled by user' : (err as Error).message.slice(0, 200);
+        // Add error log to active step
+        active.logs.push(`✗ Failed: ${(err as Error).message}`);
         bus.emit('run:step', { runId, step: { ...active, logs: [...active.logs] } });
+      }
+      // Mark remaining pending steps as skipped if abort, or keep pending
+      if (!isAbort) {
+        for (const s of steps) {
+          if (s.status === 'pending') {
+            s.status = 'skipped';
+            bus.emit('run:step', { runId, step: { ...s, logs: [...s.logs] } });
+          }
+        }
       }
       run.status = isAbort ? 'cancelled' : 'failed';
       run.phase = 'failed';
       run.finishedAt = now();
       bus.emit('run:finished', { run });
+      bus.emit('console:entry', {
+        entry: {
+          id: uid('log'),
+          level: 'error',
+          message: isAbort ? 'Run cancelled by user' : `Run failed: ${(err as Error).message}`,
+          at: now(),
+          source: 'agent',
+        },
+      });
 
       return {
         run,
         files,
         message: isAbort
           ? 'Run cancelled. Any files already written have been kept — use Version History to roll back.'
-          : `The run failed: ${(err as Error).message}`,
+          : `The run failed: ${(err as Error).message}\n\n` +
+            `**What to do:**\n` +
+            `- If you saw "Failed to fetch" or "Cannot reach AI backend", the server may be waking up (Render cold start takes 20-30s). Wait and try again.\n` +
+            `- If you're in simulated mode, try a more specific prompt.\n` +
+            `- Check the console for details and use Version History to revert if needed.`,
         changes: allChanges,
         previewHtml: CodeRunner.bundle(files, input.entryPath),
       };

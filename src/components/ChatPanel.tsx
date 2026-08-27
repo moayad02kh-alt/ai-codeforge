@@ -117,6 +117,16 @@ export function ChatPanel() {
         </div>
       )}
 
+      {isBusy && activeRun && (
+        <div className="chat__working">
+          <span className="chat__working-spinner" />
+          <span className="chat__working-title">Agent is working...</span>
+          <span className="chat__working-phase mono">
+            {activeRun.steps.find((s) => s.status === 'active')?.title ?? 'Starting'} · {activeRun.steps.filter((s) => s.status === 'success').length}/{activeRun.steps.length}
+          </span>
+        </div>
+      )}
+
       <div className="chat__scroll" ref={scrollRef} onScroll={handleScroll}>
         {isEmpty && !activeRun ? (
           <div className="chat__empty">

@@ -80,12 +80,26 @@ export function getProviderMode(): ProviderMode {
  * Safe to call repeatedly; only the first call probes unless `force` is set.
  * Never throws — any failure falls back to the offline simulation so the app
  * always remains usable.
+ *
+ * Includes a quick retry for cold-start platforms like Render where the
+ * first probe can fail with "Failed to fetch" while the service wakes.
  */
 export async function initProvider(force = false): Promise<ProviderMode> {
   if (initialized && !force) return getProviderMode();
   initialized = true;
 
-  const status = await LLMProvider.probe(AGENT_API_BASE);
+  let status: Awaited<ReturnType<typeof LLMProvider.probe>> = null;
+  try {
+    status = await LLMProvider.probe(AGENT_API_BASE);
+    // Cold-start retry: Render free tier can take 20-30s to wake, first fetch may fail
+    if (!status) {
+      await new Promise((r) => setTimeout(r, 1200));
+      status = await LLMProvider.probe(AGENT_API_BASE);
+    }
+  } catch {
+    status = null;
+  }
+
   backendStatus = status;
 
   if (status?.configured) {

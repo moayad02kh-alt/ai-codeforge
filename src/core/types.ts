@@ -98,18 +98,21 @@ export interface FileChangeSummary {
 /**
  * The canonical agent pipeline. The UI renders these as the live
  * "agent timeline"; the orchestrator drives them in order.
+ * Expanded to 10 stages for transparent real-time progress.
  */
 export type AgentPhase =
   | 'understand'
+  | 'inspect'
   | 'plan'
   | 'generate'
-  | 'modify'
+  | 'apply'
   | 'test'
   | 'detect'
   | 'repair'
   | 'preview'
   | 'done'
-  | 'failed';
+  | 'failed'
+  | 'modify';
 
 export type StepStatus = 'pending' | 'active' | 'success' | 'warning' | 'failed' | 'skipped';
 
