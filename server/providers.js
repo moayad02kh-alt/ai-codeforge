@@ -125,6 +125,78 @@ const anthropic = {
 /* Google Gemini                                                       */
 /* ------------------------------------------------------------------ */
 
+// Shared JSON schema for structured agent responses. Used when jsonMode=true
+// to make Gemini reliably return valid JSON with required fields.
+// This is the official Gemini structured output feature.
+const GEMINI_AGENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    intent: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['create-project', 'modify-project', 'fix-error', 'explain'] },
+        restatement: { type: 'string' },
+        domain: { type: 'string' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        confidence: { type: 'number' },
+      },
+    },
+    plan: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              detail: { type: 'string' },
+              targets: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['title'],
+          },
+        },
+      },
+    },
+    actions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'],
+          },
+          path: { type: 'string' },
+          content: { type: 'string' },
+          reason: { type: 'string' },
+          from: { type: 'string' },
+          to: { type: 'string' },
+          check: { type: 'string' },
+          diagnosticCode: { type: 'string' },
+          analysis: { type: 'string' },
+        },
+        required: ['type'],
+      },
+    },
+    message: { type: 'string' },
+  },
+  required: ['actions', 'message'],
+};
+
+const GEMINI_REPAIR_SCHEMA = {
+  type: 'object',
+  properties: {
+    analysis: { type: 'string' },
+    suggestion: { type: 'string' },
+    path: { type: 'string' },
+    content: { type: 'string' },
+    confidence: { type: 'number' },
+  },
+  required: ['analysis', 'suggestion', 'path', 'content', 'confidence'],
+};
+
 const gemini = {
   id: 'gemini',
   label: 'Google Gemini',
@@ -143,6 +215,10 @@ const gemini = {
         parts: [{ text: m.content }],
       }));
 
+    // Detect if this is a repair request by looking for repair-specific system prompt
+    const isRepair = system.toLowerCase().includes('automatic repair subsystem');
+    const schema = isRepair ? GEMINI_REPAIR_SCHEMA : GEMINI_AGENT_SCHEMA;
+
     const res = await fetch(
       `${base}/models/${encodeURIComponent(chosen)}:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
@@ -152,9 +228,14 @@ const gemini = {
           contents: contents.length ? contents : [{ role: 'user', parts: [{ text: 'Continue.' }] }],
           ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
           generationConfig: {
-            temperature: temperature ?? 0.3,
+            temperature: temperature ?? 0.2,
             maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 8192),
-            ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+            ...(jsonMode
+              ? {
+                  responseMimeType: 'application/json',
+                  responseSchema: schema,
+                }
+              : {}),
           },
         }),
         signal,

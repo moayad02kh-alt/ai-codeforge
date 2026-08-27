@@ -25,7 +25,7 @@ You do NOT write prose descriptions of code changes. You return STRUCTURED ACTIO
 
 ## Response format
 
-Respond with a single JSON object. No markdown fences, no commentary outside the JSON.
+Respond with a single JSON object. No markdown fences, no commentary outside the JSON. The JSON MUST be valid and parseable.
 
 {
   "intent": {
@@ -66,13 +66,14 @@ repair_error  { "type": "repair_error", "path": "styles/main.css", "content": "<
 7. Do not reference external assets, CDNs, or fonts by URL. The preview runs offline in a sandboxed iframe. Inline everything.
 8. Write complete, working code. No TODO placeholders, no stub functions.
 9. Balance every brace, bracket and tag — the platform runs static analysis and will flag you.
-10. The "message" field is markdown shown to the user. Explain what you changed and why, briefly.`;
+10. The "message" field is markdown shown to the user. Explain what you changed and why, briefly.
+11. CRITICAL: Return ONLY valid JSON. No explanation before or after. No markdown fences. Just the JSON object.`;
 
 export const REPAIR_SYSTEM_PROMPT = `You are the automatic repair subsystem of CodeForge AI.
 
 A static analyser or test run has reported a specific fault. Your job is to fix that ONE fault with the smallest possible change.
 
-Respond with a single JSON object, no markdown fences:
+Respond with a single JSON object, no markdown fences, valid JSON only:
 
 {
   "analysis": "root cause explanation — what is actually wrong and why it breaks",
@@ -85,7 +86,8 @@ Respond with a single JSON object, no markdown fences:
 Rules:
 1. "content" must be the ENTIRE corrected file, not a diff or fragment.
 2. Fix ONLY the reported fault. Do not refactor, reformat, or improve unrelated code — the platform verifies that your patch does not introduce new errors, and unrelated changes cause rejection.
-3. If the fault cannot be fixed by editing this one file, explain that in "analysis" and return the file unchanged with confidence below 0.3.`;
+3. If the fault cannot be fixed by editing this one file, explain that in "analysis" and return the file unchanged with confidence below 0.3.
+4. Return ONLY valid JSON, no fences, no extra text.`;
 
 /* ------------------------------------------------------------------ */
 /* Prompt builders                                                     */
@@ -190,89 +192,206 @@ export function buildRepairMessages(input: {
 }
 
 /* ------------------------------------------------------------------ */
-/* Response parsing                                                    */
+/* Response parsing - ROBUST PRODUCTION VERSION                        */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Extracts all balanced JSON objects from text, respecting string literals.
+ * Returns them sorted by length descending (largest/most complete first).
+ */
+function extractBalancedJsonObjects(text: string): string[] {
+  const results: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
+      }
+      if (depth < 0) {
+        depth = 0;
+        start = -1;
+      }
+    }
+  }
+
+  // Longest first - most likely to be the full response
+  return results.sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Cleans common JSON mistakes LLMs make:
+ * - trailing commas in objects/arrays
+ * - single quotes instead of double (only when safe)
+ */
+function cleanJsonString(str: string): string {
+  // Remove trailing commas: ,} -> } and ,] -> ]
+  return str.replace(/,\s*([}\]])/g, '$1');
+}
 
 /**
  * Extracts a JSON object from a model response.
  *
- * Models wrap JSON in prose or markdown fences despite instructions, so this
- * is deliberately forgiving: try the raw string, then fenced blocks, then a
- * brace-matched scan that respects string literals and escapes.
+ * Production-robust: handles:
+ * - Direct valid JSON
+ * - Markdown fenced blocks (```json ... ``` or ``` ... ```)
+ * - Multiple fenced blocks (tries each)
+ * - JSON wrapped in surrounding prose (extracts balanced objects)
+ * - Trailing commas
+ * - First { to last } slice
+ * - Validation that result looks like expected structure
  */
 export function extractJson(raw: string): unknown {
   const text = raw.trim();
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    /* fall through */
+  if (!text) {
+    throw new Error('Model response did not contain parseable JSON');
   }
 
-  // ```json ... ``` or ``` ... ```
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) {
+  const attempts: string[] = [];
+
+  // 1. Direct attempt
+  attempts.push(text);
+
+  // 2. All fenced code blocks (```json ... ``` or ``` ... ```)
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = fenceRegex.exec(text)) !== null) {
+    const inner = fenceMatch[1]?.trim();
+    if (inner) attempts.push(inner);
+  }
+
+  // 3. First { to last } - common when model adds intro/outro text
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    attempts.push(text.slice(firstBrace, lastBrace + 1));
+  }
+
+  // 4. Balanced objects scan (handles nested structures correctly)
+  attempts.push(...extractBalancedJsonObjects(text));
+
+  // Try each candidate with and without cleaning
+  for (const candidate of attempts) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+
+    // Try cleaned version first (fixes trailing commas)
+    const cleaned = cleanJsonString(trimmed);
     try {
-      return JSON.parse(fence[1].trim());
+      const parsed = JSON.parse(cleaned);
+      // Basic validation that it's an object
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed;
+      }
     } catch {
-      /* fall through */
+      // Continue
+    }
+
+    // Try original without cleaning
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed;
+      }
+    } catch {
+      // Continue to next candidate
     }
   }
 
-  // Brace-matched scan from the first '{'.
-  const start = text.indexOf('{');
-  if (start !== -1) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-
-    for (let i = start; i < text.length; i += 1) {
-      const ch = text[i];
-
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-
-      if (ch === '{') depth += 1;
-      else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          try {
-            return JSON.parse(text.slice(start, i + 1));
-          } catch {
-            break;
-          }
-        }
-      }
-    }
-  }
-
+  // If we reach here, no valid JSON found
   throw new Error('Model response did not contain parseable JSON');
+}
+
+/** Validates that parsed JSON looks like an agent response */
+function isValidAgentResponse(obj: unknown): boolean {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const o = obj as Record<string, unknown>;
+  // Must have actions array and message string (core required fields)
+  if (!Array.isArray(o.actions)) return false;
+  if (typeof o.message !== 'string') return false;
+  return true;
 }
 
 /** Normalises a parsed response into the shape the pipeline expects. */
 export function parseAgentResponse(raw: string): AgentActionResponse {
-  const parsed = extractJson(raw) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = extractJson(raw);
+  } catch (err) {
+    // Include snippet for debugging but truncate to avoid huge logs
+    const snippet = raw.slice(0, 500).replace(/\n/g, '\\n');
+    console.error('[CodeForge] Failed to parse agent response:', snippet);
+    throw new Error(`Model response did not contain parseable JSON. Snippet: ${snippet.slice(0, 200)}...`);
+  }
 
-  const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('Model response JSON is not an object');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  // If model returned array directly (just actions), wrap it
+  if (Array.isArray(parsed)) {
+    return {
+      intent: undefined,
+      plan: undefined,
+      actions: parsed as AgentActionResponse['actions'],
+      message: 'Changes applied.',
+    };
+  }
+
+  // Validate required structure
+  if (!Array.isArray(obj.actions)) {
+    // Try to recover: maybe actions is under different key or missing
+    // If we have a valid object but no actions, treat as error with helpful message
+    if (isValidAgentResponse(obj)) {
+      // Valid structure but we already checked actions, so this shouldn't happen
+    } else {
+      // Check if it's actually a repair response or other shape
+      const hasContent = typeof obj.content === 'string' || typeof obj.text === 'string';
+      if (hasContent) {
+        throw new Error('Model returned file content directly instead of structured actions JSON');
+      }
+      throw new Error('Model response JSON missing required "actions" array');
+    }
+  }
+
+  const actions = Array.isArray(obj.actions) ? obj.actions : [];
   const message =
-    typeof parsed.message === 'string' && parsed.message.trim()
-      ? parsed.message
-      : 'Changes applied.';
+    typeof obj.message === 'string' && obj.message.trim()
+      ? obj.message
+      : typeof (obj as any).explanation === 'string'
+        ? (obj as any).explanation
+        : 'Changes applied.';
 
   return {
-    intent: (parsed.intent as AgentActionResponse['intent']) ?? undefined,
-    plan: (parsed.plan as AgentActionResponse['plan']) ?? undefined,
+    intent: (obj.intent as AgentActionResponse['intent']) ?? undefined,
+    plan: (obj.plan as AgentActionResponse['plan']) ?? undefined,
     actions: actions as AgentActionResponse['actions'],
     message,
   };
@@ -287,13 +406,27 @@ export interface ParsedRepair {
 }
 
 export function parseRepairResponse(raw: string, fallbackPath: string): ParsedRepair {
-  const parsed = extractJson(raw) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = extractJson(raw);
+  } catch (err) {
+    const snippet = raw.slice(0, 500).replace(/\n/g, '\\n');
+    console.error('[CodeForge] Failed to parse repair response:', snippet);
+    throw new Error(`Repair response did not contain parseable JSON. Snippet: ${snippet.slice(0, 200)}...`);
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Repair response JSON is not an object');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
   return {
-    analysis: typeof parsed.analysis === 'string' ? parsed.analysis : 'No analysis provided.',
-    suggestion: typeof parsed.suggestion === 'string' ? parsed.suggestion : 'No suggestion provided.',
-    path: typeof parsed.path === 'string' && parsed.path ? parsed.path : fallbackPath,
-    content: typeof parsed.content === 'string' ? parsed.content : '',
+    analysis: typeof obj.analysis === 'string' ? obj.analysis : 'No analysis provided.',
+    suggestion: typeof obj.suggestion === 'string' ? obj.suggestion : 'No suggestion provided.',
+    path: typeof obj.path === 'string' && obj.path ? obj.path : fallbackPath,
+    content: typeof obj.content === 'string' ? obj.content : '',
     confidence:
-      typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
+      typeof obj.confidence === 'number' ? Math.max(0, Math.min(1, obj.confidence)) : 0.5,
   };
 }
