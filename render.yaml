@@ -13,13 +13,13 @@ services:
     runtime: node
     plan: free
 
-    # Installs dependencies and produces dist/. Render sets NODE_ENV=production,
-    # which normally makes `npm install` skip devDependencies — and vite lives
-    # there. `.npmrc` (include=dev) overrides that, so the plain command works.
-    buildCommand: npm install && npm run build
+    # Installs dependencies (devDeps included — vite is needed to build) and
+    # produces dist/. Render sets NODE_ENV=production, which makes `npm install`
+    # skip devDependencies, so `--include=dev` is required for the build to work.
+    buildCommand: npm install --include=dev && npm run build
 
-    # Runs `node index.js`, which boots server/index.js. Binds process.env.PORT.
-    startCommand: npm start
+    # Boots server/index.js via the root entrypoint. Binds process.env.PORT.
+    startCommand: node index.js
 
     healthCheckPath: /api/agent/status
 

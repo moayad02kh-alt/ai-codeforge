@@ -27,8 +27,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { providerStatus, resolveProvider } from './providers.js';
+import { hasBuild, serveStatic } from './static.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Project root (one level above server/). dist/ is resolved from here.
+const ROOT_DIR = resolve(__dirname, '..');
 
 /* ------------------------------------------------------------------ */
 /* Minimal .env loader (no dependency on dotenv)                       */
@@ -239,17 +243,48 @@ export const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/agent/repair') {
       return await handleChat(req, res, { jsonMode: true });
     }
+    // ---- Static frontend (production single-service deploy) --------------
+    // Runs only AFTER every /api/* route above, so API requests are never
+    // swallowed by the SPA fallback. No-ops when dist/ has not been built,
+    // which keeps the dev setup (Vite on :5173) behaving exactly as before.
+    if (serveStatic(req, res, ROOT_DIR)) return;
+
+    // Unbuilt frontend: explain instead of returning a bare "no route".
+    // Only when dist/ is actually missing — missing assets (e.g. /foo.js)
+    // should 404 honestly, not claim the whole build is missing.
+    if (req.method === 'GET' && !url.pathname.startsWith('/api/') && !hasBuild(ROOT_DIR)) {
+      return send(res, 404, {
+        error: 'Frontend build not found.',
+        hint: 'Run `npm run build` to generate dist/, then restart the server.',
+        code: 'FRONTEND_NOT_BUILT',
+      });
+    }
+
     send(res, 404, { error: `No route for ${req.method} ${url.pathname}` });
   } catch (err) {
     send(res, err?.status ?? 500, { error: safeErrorMessage(err) });
   }
 });
 
-// Only listen when executed directly, so tests can import the server.
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  server.listen(PORT, '0.0.0.0', () => {
+/**
+ * Starts the HTTP server.
+ *
+ * Exported so the root `index.js` entrypoint (what Render runs) can boot the
+ * exact same server. Binds 0.0.0.0 and uses process.env.PORT, which is what
+ * Render requires.
+ */
+export function start(port = PORT) {
+  return server.listen(port, '0.0.0.0', () => {
     const active = resolveProvider();
-    console.log(`[codeforge] AI backend listening on http://0.0.0.0:${PORT}`);
+    console.log(`[codeforge] Listening on http://0.0.0.0:${port}`);
+
+    if (hasBuild(ROOT_DIR)) {
+      console.log('[codeforge] Serving built frontend from dist/ (single-service mode).');
+    } else {
+      console.log('[codeforge] No dist/ build found — API only.');
+      console.log('[codeforge] Run `npm run build` to serve the UI from this server.');
+    }
+
     if (active) {
       console.log(`[codeforge] Provider: ${active.label} (${active.id})`);
     } else {
@@ -257,4 +292,9 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
       console.log('[codeforge] To connect one: cp .env.example .env && add a key && restart.');
     }
   });
+}
+
+// Only listen when executed directly, so tests can import the server.
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  start();
 }

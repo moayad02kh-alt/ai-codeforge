@@ -412,18 +412,45 @@
 /* ---------------- Responsive ---------------- */
 
 @media (max-width: 1024px) {
+  /*
+   * Below 1024px the sidebar leaves the grid and becomes a slide-over drawer.
+   *
+   * It must keep its full width here. The desktop collapse rule in App.css
+   *   .app:not(.has-sidebar) .sidebar { width: 0 }
+   * exists so the closed panel contributes no grid track, but as a fixed
+   * drawer that rule collapsed the panel to 0px and cancelled the slide
+   * animation, leaving the scrim over an empty drawer. Restore the width and
+   * let transform do the hiding.
+   */
   .sidebar {
     position: fixed;
     top: var(--topbar-h);
     left: 0;
+    /* Sit above the mobile bottom nav (z-index 35) rather than under it. */
     bottom: 0;
+    width: var(--sidebar-w);
+    max-width: 86vw; /* never cover the whole screen on small phones */
+    border-right: 1px solid var(--line);
     transform: translateX(-100%);
-    transition: transform var(--t) var(--ease);
+    transition: transform var(--t) var(--ease), visibility 0s linear var(--t);
     box-shadow: var(--shadow-lg);
+    z-index: 40;
+    /* Hidden from AT and pointer events while closed, without display:none
+       (which would kill the transition). */
+    visibility: hidden;
   }
 
   .sidebar.is-open {
     transform: none;
+    visibility: visible;
+    transition: transform var(--t) var(--ease), visibility 0s;
+  }
+
+  /* The drawer scrolls internally; the page behind must not. */
+  .sidebar__section--grow {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
 
   .sidebar__scrim {
@@ -432,7 +459,15 @@
     inset: var(--topbar-h) 0 0 0;
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(2px);
-    z-index: 29;
+    /* Below the drawer, above everything else including the bottom nav. */
+    z-index: 39;
     animation: fade-in var(--t) var(--ease);
+  }
+}
+
+@media (max-width: 1024px) and (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar.is-open {
+    transition: none;
   }
 }

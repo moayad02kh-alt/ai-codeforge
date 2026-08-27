@@ -53,9 +53,16 @@ export function SettingsModal() {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, setSettingsOpen]);
 
-  if (!open) return null;
-
+  /*
+   * Every hook must run on every render, so this has to stay above the
+   * `if (!open) return null` below. It previously sat after that early return,
+   * which meant the closed modal ran fewer hooks than the open one and React
+   * threw error #310 ("rendered more hooks than during the previous render")
+   * the moment Settings was opened, tearing the panel down.
+   */
   const { isLive: live, label: providerLabel, status: backendStatus } = useProvider();
+
+  if (!open) return null;
 
   return (
     <div className="modal__scrim" onClick={() => setSettingsOpen(false)}>

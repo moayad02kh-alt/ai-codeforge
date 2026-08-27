@@ -34,7 +34,20 @@ export type MainTab = 'code' | 'preview' | 'split';
 
 const STORAGE_KEY = 'codeforge.state.v1';
 
+/**
+ * Bumped whenever the persisted shape changes in a way older data cannot
+ * satisfy. State written by a different schema is discarded on load instead
+ * of being merged, so a browser holding data from an earlier build recovers
+ * on its own rather than rendering against a shape the code no longer
+ * understands.
+ */
+const SCHEMA_VERSION = 2;
+
+/** Keys from superseded builds, removed on load so they cannot accumulate. */
+const LEGACY_STORAGE_KEYS = ['codeforge.state', 'codeforge.state.v0'];
+
 interface PersistedShape {
+  schemaVersion?: number;
   projects: Project[];
   messages: Record<string, ChatMessage[]>;
   versions: VersionSnapshot[];
@@ -133,12 +146,72 @@ interface AppState {
 /* Persistence                                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Reads persisted state, discarding anything that is not structurally sound.
+ *
+ * The stored blob is user-writable and survives deploys, so a shape from an
+ * older build can outlive the code that wrote it. Every field is therefore
+ * checked independently and a bad one is dropped rather than allowed to
+ * propagate a malformed value into the store — a single wrong type here can
+ * leave the UI with nothing to render.
+ */
 function loadPersisted(): Partial<PersistedShape> | null {
   try {
+    /* Remove keys from superseded builds so they cannot be read again. */
+    for (const legacy of LEGACY_STORAGE_KEYS) {
+      localStorage.removeItem(legacy);
+    }
+
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as PersistedShape;
+
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+
+    const candidate = parsed as Record<string, unknown>;
+
+    /*
+     * Anything written by a different schema is dropped wholesale. Merging it
+     * field by field is what lets a half-understood shape reach the UI, so the
+     * safer move is to fall back to seed data and let the app re-persist.
+     */
+    if (candidate.schemaVersion !== SCHEMA_VERSION) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+
+    const clean: Partial<PersistedShape> = {};
+
+    if (Array.isArray(candidate.projects)) {
+      clean.projects = candidate.projects as PersistedShape['projects'];
+    }
+    if (Array.isArray(candidate.versions)) {
+      clean.versions = candidate.versions as PersistedShape['versions'];
+    }
+    if (
+      typeof candidate.messages === 'object' &&
+      candidate.messages !== null &&
+      !Array.isArray(candidate.messages)
+    ) {
+      clean.messages = candidate.messages as PersistedShape['messages'];
+    }
+    if (typeof candidate.activeProjectId === 'string') {
+      clean.activeProjectId = candidate.activeProjectId;
+    }
+    if (
+      typeof candidate.settings === 'object' &&
+      candidate.settings !== null &&
+      !Array.isArray(candidate.settings)
+    ) {
+      clean.settings = candidate.settings as PersistedShape['settings'];
+    }
+
+    return clean;
   } catch {
+    /* Unparseable or storage blocked (private mode) — fall back to seeds. */
     return null;
   }
 }
@@ -156,6 +229,7 @@ function persist(state: AppState) {
   saveTimer = window.setTimeout(() => {
     try {
       const payload: PersistedShape = {
+        schemaVersion: SCHEMA_VERSION,
         projects: state.projects,
         messages: state.messages,
         versions: state.versions.slice(0, 30),
@@ -739,7 +813,50 @@ export const selectActiveFile = (s: AppState): ProjectFile | undefined => {
   return FileManager.find(project.files, s.activeFilePath);
 };
 
-export const selectMessages = (s: AppState): ChatMessage[] => s.messages[s.activeProjectId] ?? [];
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ *  DERIVED SELECTORS MUST RETURN A STABLE REFERENCE.
+ *
+ *  Zustand v5 reads state through React's useSyncExternalStore, which
+ *  compares snapshots with Object.is. A selector that derives a value with
+ *  .filter(), .map() or `?? []` builds a NEW array on every call, so the
+ *  comparison always fails, React re-renders, calls getSnapshot again, gets
+ *  yet another new array — an infinite loop that ends in
+ *  "Maximum update depth exceeded" and unmounts the whole tree.
+ *
+ *  The helpers below therefore memoise on their inputs and return the very
+ *  same array reference until those inputs actually change.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+
+/** Shared empty array so "no results" is always the same reference. */
+const EMPTY: readonly never[] = Object.freeze([]);
+
+function memoizeOne<A extends unknown[], R>(fn: (...args: A) => R) {
+  let lastArgs: A | null = null;
+  let lastResult: R;
+  return (...args: A): R => {
+    if (lastArgs && lastArgs.length === args.length && lastArgs.every((a, i) => Object.is(a, args[i]))) {
+      return lastResult;
+    }
+    lastArgs = args;
+    lastResult = fn(...args);
+    return lastResult;
+  };
+}
+
+const messagesFor = memoizeOne(
+  (byProject: Record<string, ChatMessage[]>, projectId: string): ChatMessage[] =>
+    byProject[projectId] ?? (EMPTY as unknown as ChatMessage[]),
+);
+
+const versionsFor = memoizeOne((versions: VersionSnapshot[], projectId: string): VersionSnapshot[] => {
+  const found = VersionManager.forProject(versions, projectId);
+  return found.length ? found : (EMPTY as unknown as VersionSnapshot[]);
+});
+
+export const selectMessages = (s: AppState): ChatMessage[] =>
+  messagesFor(s.messages, s.activeProjectId);
 
 export const selectProjectVersions = (s: AppState): VersionSnapshot[] =>
-  VersionManager.forProject(s.versions, s.activeProjectId);
+  versionsFor(s.versions, s.activeProjectId);

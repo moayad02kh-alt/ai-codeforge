@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BottomPanel } from './components/BottomPanel';
 import { ChatPanel } from './components/ChatPanel';
 import { CodeEditor } from './components/CodeEditor';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { IconCode, IconEye, IconSparkle } from './components/Icons';
 import { PreviewPanel } from './components/PreviewPanel';
 import { SettingsModal } from './components/SettingsModal';
@@ -12,12 +13,23 @@ import { initProvider } from './services/registry';
 import { useStore } from './state/store';
 import './App.css';
 
+const MOBILE_PANES: ReadonlyArray<'chat' | 'code' | 'preview'> = ['chat', 'code', 'preview'];
+
 export default function App() {
   const init = useStore((s) => s.init);
   const mainTab = useStore((s) => s.mainTab);
   const chatOpen = useStore((s) => s.chatOpen);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const mobilePane = useStore((s) => s.mobilePane);
+
+  /*
+   * The mobile layout hides panes by matching [data-mobile-pane] exactly, so
+   * an unrecognised value must never reach the DOM. TypeScript constrains the
+   * union at compile time, but this value can also arrive from rehydrated or
+   * older persisted state at runtime, so it is validated here too. Falling
+   * back to 'chat' guarantees a visible pane instead of a blank screen.
+   */
+  const safeMobilePane = MOBILE_PANES.includes(mobilePane) ? mobilePane : 'chat';
 
   const setChatOpen = useStore((s) => s.setChatOpen);
   const setMobilePane = useStore((s) => s.setMobilePane);
@@ -67,11 +79,17 @@ export default function App() {
   return (
     <div
       className={`app ${sidebarOpen ? 'has-sidebar' : ''} ${chatOpen ? 'has-chat' : ''}`}
-      data-mobile-pane={mobilePane}
+      data-mobile-pane={safeMobilePane}
     >
-      <TopBar />
-      <Sidebar />
-      <ChatPanel />
+      <ErrorBoundary label="Top bar">
+        <TopBar />
+      </ErrorBoundary>
+      <ErrorBoundary label="Sidebar">
+        <Sidebar />
+      </ErrorBoundary>
+      <ErrorBoundary label="Chat panel">
+        <ChatPanel />
+      </ErrorBoundary>
 
       {/* Floating re-open button when the chat is collapsed (desktop only). */}
       {!chatOpen && (
@@ -87,11 +105,21 @@ export default function App() {
 
       <main className={`workspace workspace--${mainTab}`}>
         <div className="workspace__panes">
-          {mainTab !== 'preview' && <CodeEditor />}
+          {mainTab !== 'preview' && (
+            <ErrorBoundary label="Code editor">
+              <CodeEditor />
+            </ErrorBoundary>
+          )}
           {mainTab === 'split' && <div className="workspace__divider" aria-hidden="true" />}
-          {mainTab !== 'code' && <PreviewPanel />}
+          {mainTab !== 'code' && (
+            <ErrorBoundary label="Preview">
+              <PreviewPanel />
+            </ErrorBoundary>
+          )}
         </div>
-        <BottomPanel />
+        <ErrorBoundary label="Bottom panel">
+          <BottomPanel />
+        </ErrorBoundary>
       </main>
 
       {/* Mobile bottom navigation */}

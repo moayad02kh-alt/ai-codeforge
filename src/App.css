@@ -10,10 +10,19 @@
   overflow: hidden;
 }
 
-/* Collapsed panels contribute no track width. */
-.app:not(.has-sidebar) .sidebar {
-  width: 0;
-  border-right: none;
+/*
+ * Collapsed panels contribute no track width.
+ *
+ * Desktop only. Below 1024px the sidebar is a fixed slide-over drawer
+ * (see Sidebar.css) and must keep its full width — collapsing it to 0 there
+ * cancelled the slide animation and left only the scrim on screen, which
+ * looked like a blank/black page.
+ */
+@media (min-width: 1025px) {
+  .app:not(.has-sidebar) .sidebar {
+    width: 0;
+    border-right: none;
+  }
 }
 
 /* ---------------- Workspace ---------------- */
@@ -110,32 +119,57 @@
 
 @media (max-width: 860px) {
   .app {
+    /*
+     * Three explicit rows. The nav row is named rather than left to implicit
+     * placement so the middle row always resolves to 1fr and the panes always
+     * receive real height.
+     */
     grid-template-areas:
       'topbar'
-      'workspace';
+      'workspace'
+      'mobilenav';
     grid-template-columns: 1fr;
-    grid-template-rows: var(--topbar-h) 1fr auto;
+    grid-template-rows: var(--topbar-h) minmax(0, 1fr) auto;
     padding-bottom: 0;
   }
 
-  /* One pane at a time, driven by the mobile nav. */
+  /*
+   * One pane at a time, driven by the mobile nav.
+   *
+   * These rules are written FAIL-OPEN. Previously .chat and .workspace both
+   * defaulted to display:none and were revealed only by an exact
+   * [data-mobile-pane='...'] match, so any unexpected value — a stale pane
+   * name, a removed attribute, a future pane like 'split' — hid every panel
+   * and painted the whole viewport --bg-base (near-black). That is the
+   * mobile "black screen": no error, no crash, just nothing displayed.
+   *
+   * Now the chat pane is the default and panes are hidden only by a positive
+   * match, so an unrecognised value degrades to a usable screen.
+   */
   .chat {
     grid-area: workspace;
-    display: none;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
   }
 
   .workspace {
     grid-area: workspace;
     display: none;
+    min-width: 0;
+    min-height: 0;
   }
 
-  .app[data-mobile-pane='chat'] .chat {
-    display: flex;
-  }
-
+  /* Reveal the workspace only for the two panes that want it... */
   .app[data-mobile-pane='code'] .workspace,
   .app[data-mobile-pane='preview'] .workspace {
     display: flex;
+  }
+
+  /* ...and hide chat only when one of those panes is actually active. */
+  .app[data-mobile-pane='code'] .chat,
+  .app[data-mobile-pane='preview'] .chat {
+    display: none;
   }
 
   /* On mobile, split view is always single-pane. */
@@ -162,12 +196,15 @@
   }
 
   .mobile-nav {
-    grid-column: 1 / -1;
+    grid-area: mobilenav;
     display: flex;
     height: 54px;
     background: var(--bg-panel);
     border-top: 1px solid var(--line);
     padding-bottom: env(safe-area-inset-bottom, 0);
+    /* z-index only applies to a positioned element; without this the
+       stacking order below was silently ignored. */
+    position: relative;
     z-index: 35;
   }
 

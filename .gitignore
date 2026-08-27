@@ -3,6 +3,15 @@ dist
 .DS_Store
 *.local
 
+# Downloaded test browser (@puppeteer/browsers). Large and regeneratable —
+# never commit it, and keep it out of the workspace snapshot.
+chrome/
+.cache/
+.npm/
+
+# Scratch verification scripts
+*.tmp.mjs
+
 # Secrets — never commit
 .env
 .env.*
