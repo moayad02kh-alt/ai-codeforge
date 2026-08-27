@@ -9,7 +9,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:agent": "vite-node scripts/test-agent.mjs"
+    "test:agent": "vite-node scripts/test-agent.mjs",
+    "start": "node index.js",
+    "start:prod": "npm run build && node index.js",
+    "serve": "node scripts/serve.mjs",
+    "preview:prod": "node scripts/serve.mjs"
   },
   "keywords": [],
   "author": "",
@@ -28,5 +32,8 @@
     "vite": "^8.2.2",
     "vite-node": "^6.0.0"
   },
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
 }

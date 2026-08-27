@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <!-- Without this the browser requests /favicon.ico on every load and logs a 404. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>CodeForge AI — AI Software Engineering Platform</title>
     <meta
       name="description"
@@ -11,7 +13,75 @@
     />
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      Boot fallback.
+
+      #root is empty until React mounts, so anything that stops the module
+      from running (a stale cached chunk, an unsupported syntax feature on an
+      older mobile engine, a failed network fetch) leaves the page painted
+      --bg-base with no text at all: an unexplained black screen.
+
+      This markup renders immediately from the HTML document, needs no CSS
+      bundle and no JavaScript, and React replaces it on its first paint. If
+      it is still visible the boot genuinely failed, and it says so instead of
+      showing nothing. The script below escalates the message rather than
+      leaving a misleading "Loading" forever.
+    -->
+    <div id="root">
+      <div id="boot-fallback" style="
+        position:fixed; inset:0; display:flex; align-items:center;
+        justify-content:center; padding:24px;
+        background:#07080c; color:#e8eaf2;
+        font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+        -webkit-font-smoothing:antialiased;">
+        <div style="max-width:32rem; text-align:center;">
+          <div style="
+            width:44px; height:44px; margin:0 auto 18px; border-radius:12px;
+            background:linear-gradient(135deg,#7c7aff,#5b58e8);
+            display:flex; align-items:center; justify-content:center;
+            font-size:20px; font-weight:700; color:#fff;">C</div>
+          <h1 style="margin:0 0 8px; font-size:17px; font-weight:600; letter-spacing:-0.01em;">
+            CodeForge AI
+          </h1>
+          <p id="boot-msg" style="margin:0; font-size:14px; line-height:1.55; color:#9aa1b4;">
+            Starting the workspace&hellip;
+          </p>
+          <noscript>
+            <p style="margin:12px 0 0; font-size:14px; color:#9aa1b4;">
+              This application requires JavaScript to be enabled.
+            </p>
+          </noscript>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /*
+       * If React has not replaced the fallback shortly after load, the boot
+       * failed. Report it in place so the screen is never silently blank, and
+       * offer a hard reload, which clears the stale cached module that is the
+       * usual cause on a device that previously loaded a broken build.
+       */
+      (function () {
+        var start = Date.now();
+        window.addEventListener('error', report, true);
+        function report() {
+          var el = document.getElementById('boot-msg');
+          if (!el || !document.getElementById('boot-fallback')) return;
+          el.innerHTML =
+            'The workspace failed to start. This is usually a cached copy of an ' +
+            'older build.<br><br>' +
+            '<button onclick="location.reload(true)" style="' +
+            'padding:10px 18px;border-radius:10px;border:1px solid rgba(255,255,255,.18);' +
+            'background:#7c7aff;color:#fff;font:inherit;font-size:14px;cursor:pointer;">' +
+            'Reload</button>';
+        }
+        setTimeout(function () {
+          if (document.getElementById('boot-fallback') && Date.now() - start > 7000) report();
+        }, 8000);
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

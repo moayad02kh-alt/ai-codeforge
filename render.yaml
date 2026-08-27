@@ -1,10 +1,49 @@
+# CodeForge AI — Render single Web Service (one process, one public URL).
+#
+# The Node server serves BOTH the built Vite frontend (dist/) and the JSON API
+# (/api/agent/*), so the browser calls the API same-origin — no CORS, no second
+# service, no hardcoded host.
+#
+# Blueprint deploys read this file automatically. If you configured the service
+# by hand in the dashboard, just mirror buildCommand / startCommand below.
+
 services:
   - type: web
-    name: ai-codeforge
+    name: codeforge-ai
     runtime: node
     plan: free
+
+    # Installs dependencies and produces dist/. Render sets NODE_ENV=production,
+    # which normally makes `npm install` skip devDependencies — and vite lives
+    # there. `.npmrc` (include=dev) overrides that, so the plain command works.
     buildCommand: npm install && npm run build
+
+    # Runs `node index.js`, which boots server/index.js. Binds process.env.PORT.
     startCommand: npm start
+
+    healthCheckPath: /api/agent/status
+
     envVars:
-      - key: NODE_ENV
-        value: production
+      # ─────────────────────────────────────────────────────────────────
+      #  SECRETS: set these in the Render dashboard, never in this file.
+      #  sync:false means "prompt me, do not store the value in git".
+      # ─────────────────────────────────────────────────────────────────
+      - key: OPENAI_API_KEY
+        sync: false
+
+      - key: AI_PROVIDER
+        value: openai
+
+      - key: OPENAI_MODEL
+        value: gpt-4o
+
+      # Lock browser origins to this service once you know the URL, e.g.
+      # https://codeforge-ai.onrender.com
+      - key: CORS_ORIGIN
+        value: "*"
+
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "30"
+
+      - key: NODE_VERSION
+        value: "20"
