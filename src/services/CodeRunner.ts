@@ -17,6 +17,95 @@ import { jitter, sleep, uid } from '../core/utils';
 import { ErrorDetector } from './ErrorDetector';
 import { FileManager } from './FileManager';
 
+/** Safe storage polyfill for sandboxed previews - must be injected FIRST */
+const SAFE_STORAGE_POLYFILL = `
+<script>
+(function(){
+  // Safe storage for sandboxed iframe (no allow-same-origin)
+  // Provides in-memory fallback when localStorage throws SecurityError
+  var memoryStore = {};
+  var safeStorageImpl = {
+    getItem: function(k){ return memoryStore[k] !== undefined ? memoryStore[k] : null; },
+    setItem: function(k,v){ memoryStore[k]=String(v); },
+    removeItem: function(k){ delete memoryStore[k]; },
+    clear: function(){ memoryStore={}; },
+    key: function(i){ var keys=Object.keys(memoryStore); return keys[i] || null; },
+    get length(){ return Object.keys(memoryStore).length; }
+  };
+
+  var useMemory = false;
+  var originalStorage = null;
+  
+  try {
+    var testKey = '__cf_storage_test__';
+    window.localStorage.setItem(testKey, '1');
+    window.localStorage.removeItem(testKey);
+    originalStorage = window.localStorage;
+  } catch (e) {
+    useMemory = true;
+  }
+
+  var safeWrapper = {
+    getItem: function(k){
+      if (useMemory || !originalStorage) return safeStorageImpl.getItem(k);
+      try { return originalStorage.getItem(k); } catch(e){ return safeStorageImpl.getItem(k); }
+    },
+    setItem: function(k,v){
+      if (useMemory || !originalStorage) return safeStorageImpl.setItem(k,v);
+      try { originalStorage.setItem(k, String(v)); } catch(e){ safeStorageImpl.setItem(k,v); }
+    },
+    removeItem: function(k){
+      if (useMemory || !originalStorage) return safeStorageImpl.removeItem(k);
+      try { originalStorage.removeItem(k); } catch(e){ safeStorageImpl.removeItem(k); }
+    },
+    clear: function(){
+      safeStorageImpl.clear();
+      if (!useMemory && originalStorage) { try { originalStorage.clear(); } catch(e){} }
+    },
+    key: function(i){
+      if (useMemory || !originalStorage) return safeStorageImpl.key(i);
+      try { return originalStorage.key(i); } catch(e){ return safeStorageImpl.key(i); }
+    },
+    get length(){
+      if (useMemory || !originalStorage) return safeStorageImpl.length;
+      try { return originalStorage.length; } catch(e){ return safeStorageImpl.length; }
+    }
+  };
+
+  // Expose safeStorage globally for new code
+  try { window.safeStorage = safeWrapper; } catch(e){}
+  
+  // Try to override localStorage with safe wrapper if possible
+  // In sandboxed iframe without allow-same-origin, direct access to localStorage throws,
+  // so we need to define it if it doesn't exist or is broken
+  if (useMemory) {
+    try {
+      Object.defineProperty(window, 'localStorage', {
+        value: safeWrapper,
+        writable: false,
+        configurable: false
+      });
+    } catch(e) {
+      // If defineProperty fails, at least provide safeStorage
+      window._safeLocalStorage = safeWrapper;
+    }
+  } else if (originalStorage) {
+    // Even when localStorage exists, wrap it to prevent crashes on quota or security errors
+    try {
+      Object.defineProperty(window, 'localStorage', {
+        value: safeWrapper,
+        writable: false,
+        configurable: true
+      });
+    } catch(e) {
+      // If we can't override, provide safeStorage as alternative and keep original wrapped
+      window._safeLocalStorage = safeWrapper;
+    }
+  }
+})();
+</script>
+`;
+
 /** Console bridge injected into the preview document. */
 const CONSOLE_BRIDGE = `
 <script>
@@ -94,10 +183,12 @@ export class CodeRunner {
       },
     );
 
-    // Install the console bridge first so early errors are captured.
+    // Install safe storage polyfill FIRST, then console bridge so early errors are captured.
+    // Safe storage must come before any app code that might access localStorage
+    const polyfills = `${SAFE_STORAGE_POLYFILL}\n${CONSOLE_BRIDGE}`;
     html = html.includes('<head>')
-      ? html.replace('<head>', `<head>\n${CONSOLE_BRIDGE}`)
-      : `${CONSOLE_BRIDGE}\n${html}`;
+      ? html.replace('<head>', `<head>\n${polyfills}`)
+      : `${polyfills}\n${html}`;
 
     return html;
   }

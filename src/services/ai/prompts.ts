@@ -68,7 +68,28 @@ repair_error  { "type": "repair_error", "path": "styles/main.css", "content": "<
 9. Balance every brace, bracket and tag — the platform runs static analysis and will flag you.
 10. The "message" field is markdown shown to the user. Explain what you changed and why, briefly.
 11. CRITICAL: Return ONLY valid JSON. No explanation before or after. No markdown fences. Just the JSON object.
-12. CRITICAL: You MUST return at least one file action (create_file or update_file). Empty actions array is NEVER allowed for create-project or modify-project requests. For a Todo app, you must create index.html, styles/main.css, and scripts/main.js at minimum.`;
+12. CRITICAL: You MUST return at least one file action (create_file or update_file). Empty actions array is NEVER allowed for create-project or modify-project requests. For a Todo app, you must create index.html, styles/main.css, and scripts/main.js at minimum.
+13. STORAGE SAFETY: The preview runs in a sandboxed iframe WITHOUT allow-same-origin, so direct window.localStorage access throws SecurityError. NEVER use localStorage directly. ALWAYS use this safe wrapper that handles SecurityError and falls back to in-memory storage:
+
+const safeStorage = (() => {
+  let memory = {};
+  let useMemory = false;
+  try {
+    const test = '__cf_test__';
+    window.localStorage.setItem(test, '1');
+    window.localStorage.removeItem(test);
+  } catch (e) { useMemory = true; }
+  return {
+    getItem(k) { if (useMemory) return memory[k] ?? null; try { return window.localStorage.getItem(k); } catch { return memory[k] ?? null; } },
+    setItem(k,v) { if (useMemory) { memory[k]=String(v); return; } try { window.localStorage.setItem(k,String(v)); } catch { memory[k]=String(v); } },
+    removeItem(k) { if (useMemory) { delete memory[k]; return; } try { window.localStorage.removeItem(k); } catch { delete memory[k]; } },
+    clear() { if (useMemory) { memory={}; return; } try { window.localStorage.clear(); } catch {} memory={}; },
+    key(i) { if (useMemory) return Object.keys(memory)[i]||null; try { return window.localStorage.key(i); } catch { return Object.keys(memory)[i]||null; } },
+    get length() { if (useMemory) return Object.keys(memory).length; try { return window.localStorage.length; } catch { return Object.keys(memory).length; } }
+  };
+})();
+
+Use safeStorage.getItem/setItem/removeItem instead of localStorage. Include this wrapper at the top of any JS file that needs persistence. This prevents SecurityError: Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.`;
 
 export const REPAIR_SYSTEM_PROMPT = `You are the automatic repair subsystem of CodeForge AI.
 

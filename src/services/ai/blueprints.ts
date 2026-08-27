@@ -1044,6 +1044,474 @@ describe('formatting', () => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Todo application - with safe storage for sandboxed previews         */
+/* ------------------------------------------------------------------ */
+
+const todo: Blueprint = {
+  id: 'todo-app',
+  label: 'Todo application',
+  match: ['todo', 'task manager', 'task list', 'tasks', 'to-do', 'todolist'],
+  entry: 'index.html',
+  taskTitles: [
+    'Create Todo layout with input and filters',
+    'Implement add, delete, complete functionality',
+    'Add safe storage with sandboxed fallback',
+    'Build filtering and clear completed',
+    'Polish responsive modern design',
+  ],
+  build(ctx) {
+    const brand = ctx.brand;
+    return [
+      {
+        path: 'index.html',
+        rationale: 'Todo app structure with input, filters, list, and stats.',
+        content: `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${brand} — Todo</title>
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>${brand}</h1>
+      <p>Stay organized — add, complete, and manage your tasks</p>
+    </header>
+
+    <div class="composer">
+      <input id="todo-input" type="text" placeholder="What needs to be done?" aria-label="New todo" />
+      <button id="add-btn" class="btn btn--primary">Add</button>
+    </div>
+
+    <div class="filters" role="group" aria-label="Filter tasks">
+      <button data-filter="all" class="filter is-active">All</button>
+      <button data-filter="active" class="filter">Active</button>
+      <button data-filter="completed" class="filter">Completed</button>
+    </div>
+
+    <ul id="todo-list" class="list" aria-live="polite"></ul>
+
+    <footer class="footer">
+      <span id="count">0 tasks left</span>
+      <button id="clear-completed" class="btn btn--ghost">Clear completed</button>
+    </footer>
+  </div>
+  <script src="scripts/main.js"></script>
+</body>
+</html>
+`,
+      },
+      {
+        path: 'styles/main.css',
+        rationale: 'Modern responsive Todo design with safe storage support.',
+        content: `:root {
+  --bg: #0a0a0f;
+  --card: #14151f;
+  --line: rgba(255,255,255,0.08);
+  --text: #e8eaf2;
+  --muted: #8b90a0;
+  --accent: #7c7aff;
+  --accent-soft: rgba(124,122,255,0.15);
+  --good: #22c55e;
+  --danger: #ef4444;
+  --ease: cubic-bezier(0.22,1,0.36,1);
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(800px 400px at 50% -10%, var(--accent-soft), transparent 70%), var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: grid;
+  place-items: start center;
+  padding: 40px 20px;
+}
+.app {
+  width: 100%;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.header { text-align: center; margin-bottom: 24px; }
+.header h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; }
+.header p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+.composer { display: flex; gap: 10px; margin-bottom: 18px; }
+.composer input {
+  flex: 1;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  font-size: 15px;
+}
+.composer input:focus { outline: none; border-color: var(--accent); }
+.btn {
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  border: 0;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform .2s var(--ease), filter .2s;
+}
+.btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+.btn--ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.btn--ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+.filters { display: flex; gap: 8px; margin-bottom: 18px; }
+.filter {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.filter.is-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.todo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: all .2s;
+}
+.todo:hover { border-color: rgba(255,255,255,0.12); }
+.todo.is-completed { opacity: 0.6; }
+.todo.is-completed .todo__text { text-decoration: line-through; color: var(--muted); }
+.todo__check {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition: all .2s;
+}
+.todo__check.is-done { background: var(--good); border-color: var(--good); color: #fff; }
+.todo__text { flex: 1; font-size: 14.5px; word-break: break-word; }
+.todo__del {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  transition: all .2s;
+}
+.todo__del:hover { color: var(--danger); background: rgba(239,68,68,0.1); }
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+}
+.empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+@media (max-width: 640px) {
+  body { padding: 20px 12px; }
+  .app { padding: 20px; }
+}
+`,
+      },
+      {
+        path: 'scripts/main.js',
+        rationale: 'Todo logic with safe storage handling SecurityError for sandboxed previews.',
+        content: `(function () {
+  'use strict';
+
+  // --- Safe storage utility: handles SecurityError in sandboxed iframe ---
+  // The preview iframe uses sandbox without allow-same-origin, so localStorage
+  // access throws SecurityError. This wrapper detects that and falls back to memory.
+  const safeStorage = (() => {
+    let memory = {};
+    let useMemory = false;
+    try {
+      const test = '__cf_test__';
+      window.localStorage.setItem(test, '1');
+      window.localStorage.removeItem(test);
+    } catch (e) {
+      useMemory = true;
+    }
+    return {
+      getItem(k) {
+        if (useMemory) return memory[k] ?? null;
+        try { return window.localStorage.getItem(k); } catch { return memory[k] ?? null; }
+      },
+      setItem(k, v) {
+        if (useMemory) { memory[k] = String(v); return; }
+        try { window.localStorage.setItem(k, String(v)); } catch { memory[k] = String(v); }
+      },
+      removeItem(k) {
+        if (useMemory) { delete memory[k]; return; }
+        try { window.localStorage.removeItem(k); } catch { delete memory[k]; }
+      },
+      clear() {
+        if (useMemory) { memory = {}; return; }
+        try { window.localStorage.clear(); } catch {}
+        memory = {};
+      }
+    };
+  })();
+
+  const STORAGE_KEY = 'codeforge.todo.v1';
+  let todos = [];
+  let filter = 'all';
+
+  function load() {
+    try {
+      const raw = safeStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) todos = parsed;
+      }
+    } catch (e) {
+      // If parsing fails or storage unavailable, start fresh with in-memory
+      todos = [];
+    }
+  }
+
+  function save() {
+    try {
+      safeStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    } catch (e) {
+      // Silently fail to memory fallback - never crash the app
+    }
+  }
+
+  function add(text) {
+    const t = text.trim();
+    if (!t) return;
+    todos.push({ id: Date.now() + Math.random(), text: t, done: false, createdAt: Date.now() });
+    save();
+    render();
+  }
+
+  function remove(id) {
+    todos = todos.filter(function (t) { return t.id !== id; });
+    save();
+    render();
+  }
+
+  function toggle(id) {
+    todos = todos.map(function (t) {
+      return t.id === id ? { id: t.id, text: t.text, done: !t.done, createdAt: t.createdAt } : t;
+    });
+    save();
+    render();
+  }
+
+  function clearCompleted() {
+    todos = todos.filter(function (t) { return !t.done; });
+    save();
+    render();
+  }
+
+  function filtered() {
+    if (filter === 'active') return todos.filter(function (t) { return !t.done; });
+    if (filter === 'completed') return todos.filter(function (t) { return t.done; });
+    return todos;
+  }
+
+  function render() {
+    var list = document.getElementById('todo-list');
+    var countEl = document.getElementById('count');
+    var items = filtered();
+
+    if (todos.length === 0) {
+      list.innerHTML = '<li class="empty">No tasks yet. Add one above!</li>';
+    } else if (items.length === 0) {
+      list.innerHTML = '<li class="empty">No ' + filter + ' tasks</li>';
+    } else {
+      list.innerHTML = items.map(function (t) {
+        return '<li class="todo' + (t.done ? ' is-completed' : '') + '">' +
+          '<button class="todo__check' + (t.done ? ' is-done' : '') + '" data-id="' + t.id + '" aria-label="Toggle">' + (t.done ? '✓' : '') + '</button>' +
+          '<span class="todo__text">' + escapeHtml(t.text) + '</span>' +
+          '<button class="todo__del" data-del="' + t.id + '" aria-label="Delete">✕</button>' +
+          '</li>';
+      }).join('');
+    }
+
+    var activeCount = todos.filter(function (t) { return !t.done; }).length;
+    countEl.textContent = activeCount + ' task' + (activeCount === 1 ? '' : 's') + ' left';
+
+    // Bind events
+    list.querySelectorAll('[data-id]').forEach(function (btn) {
+      btn.addEventListener('click', function () { toggle(parseFloat(btn.getAttribute('data-id'))); });
+    });
+    list.querySelectorAll('[data-del]').forEach(function (btn) {
+      btn.addEventListener('click', function () { remove(parseFloat(btn.getAttribute('data-del'))); });
+    });
+  }
+
+  function escapeHtml(s) {
+    var div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
+
+  // Init
+  var input = document.getElementById('todo-input');
+  var addBtn = document.getElementById('add-btn');
+  var clearBtn = document.getElementById('clear-completed');
+
+  function handleAdd() {
+    add(input.value);
+    input.value = '';
+    input.focus();
+  }
+
+  addBtn.addEventListener('click', handleAdd);
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') handleAdd();
+  });
+
+  document.querySelectorAll('.filter').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.filter').forEach(function (b) { b.classList.remove('is-active'); });
+      btn.classList.add('is-active');
+      filter = btn.getAttribute('data-filter');
+      render();
+    });
+  });
+
+  clearBtn.addEventListener('click', clearCompleted);
+
+  load();
+  render();
+})();
+`,
+      },
+      {
+        path: 'tests/todo.test.js',
+        rationale: 'Tests Todo logic with safe storage fallback.',
+        content: `import { describe, it, expect, beforeEach } from 'vitest';
+
+function createMemoryStorage() {
+  let mem = {};
+  return {
+    getItem: (k) => mem[k] ?? null,
+    setItem: (k, v) => { mem[k] = String(v); },
+    removeItem: (k) => { delete mem[k]; },
+    clear: () => { mem = {}; },
+  };
+}
+
+function createTodoManager(storage) {
+  let todos = [];
+  const load = () => {
+    try {
+      const raw = storage.getItem('todo');
+      if (raw) todos = JSON.parse(raw);
+    } catch { todos = []; }
+  };
+  const save = () => {
+    try { storage.setItem('todo', JSON.stringify(todos)); } catch {}
+  };
+  return {
+    get todos() { return todos; },
+    add(text) { todos.push({ id: Date.now(), text, done: false }); save(); },
+    toggle(id) { todos = todos.map(t => t.id === id ? {...t, done: !t.done} : t); save(); },
+    remove(id) { todos = todos.filter(t => t.id !== id); save(); },
+    clearCompleted() { todos = todos.filter(t => !t.done); save(); },
+    load,
+  };
+}
+
+describe('todo with safe storage', () => {
+  let storage, manager;
+
+  beforeEach(() => {
+    storage = createMemoryStorage();
+    manager = createTodoManager(storage);
+  });
+
+  it('adds tasks', () => {
+    manager.add('Buy milk');
+    expect(manager.todos.length).toBe(1);
+    expect(manager.todos[0].text).toBe('Buy milk');
+  });
+
+  it('toggles complete', () => {
+    manager.add('Task');
+    const id = manager.todos[0].id;
+    manager.toggle(id);
+    expect(manager.todos[0].done).toBe(true);
+  });
+
+  it('deletes tasks', () => {
+    manager.add('A');
+    manager.add('B');
+    const id = manager.todos[0].id;
+    manager.remove(id);
+    expect(manager.todos.length).toBe(1);
+    expect(manager.todos[0].text).toBe('B');
+  });
+
+  it('clears completed', () => {
+    manager.add('A');
+    manager.add('B');
+    manager.toggle(manager.todos[0].id);
+    manager.clearCompleted();
+    expect(manager.todos.length).toBe(1);
+    expect(manager.todos[0].text).toBe('B');
+  });
+
+  it('persists to storage', () => {
+    manager.add('Persisted');
+    const raw = storage.getItem('todo');
+    expect(raw).toContain('Persisted');
+  });
+
+  it('handles storage SecurityError gracefully', () => {
+    const brokenStorage = {
+      getItem: () => { throw new Error('SecurityError'); },
+      setItem: () => { throw new Error('SecurityError'); },
+      removeItem: () => { throw new Error('SecurityError'); },
+      clear: () => { throw new Error('SecurityError'); },
+    };
+    const m = createTodoManager(brokenStorage);
+    expect(() => m.add('Test')).not.toThrow();
+    expect(m.todos.length).toBe(1);
+  });
+});
+`,
+      },
+      packageJson(ctx, 'todo-app'),
+      readme(ctx, '- Vanilla HTML/CSS/JS\\n- Safe storage with sandboxed fallback\\n- Vitest', [
+        'Add, delete, complete tasks',
+        'Filter: All / Active / Completed',
+        'Clear completed',
+        'Safe persistence: localStorage with in-memory fallback for sandboxed previews',
+        'Never crashes on SecurityError',
+        'Modern responsive design',
+      ]),
+    ];
+  },
+};
+
+/* ------------------------------------------------------------------ */
 /* Portfolio (generic fallback)                                        */
 /* ------------------------------------------------------------------ */
 
@@ -1224,7 +1692,7 @@ describe('contact form', () => {
   },
 };
 
-export const BLUEPRINTS: Blueprint[] = [restaurant, landing, dashboard, portfolio];
+export const BLUEPRINTS: Blueprint[] = [restaurant, landing, dashboard, todo, portfolio];
 
 /**
  * Routes a free-text prompt to the best-matching blueprint.
