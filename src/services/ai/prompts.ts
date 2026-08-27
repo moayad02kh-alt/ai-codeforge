@@ -458,6 +458,12 @@ function tryParseCandidate(candidate: string): { parsed?: unknown; error?: strin
  * - Removes trailing commas only outside strings
  * - Validates structure
  * - Returns diagnostic with exact failure if all attempts fail
+ *
+ * CRITICAL FIX for Gemini truncation bug:
+ * When outer JSON is truncated, inner action objects like {"type":"update_file","path":"...","content":":root {...}"}
+ * may still be valid JSON. Previously we returned the first valid JSON (inner action), which has content field
+ * but no actions array, causing false "file content directly" error even though raw contains {"actions":[...]}.
+ * Now we prioritize candidates with "actions" array and skip inner action objects when raw contains actions keyword.
  */
 export function extractJson(raw: string): unknown {
   const text = raw.trim();
@@ -470,6 +476,10 @@ export function extractJson(raw: string): unknown {
 
   const candidates: string[] = [];
   const diagnostics: Array<{ candidatePreview: string; error: string }> = [];
+
+  // Detect if raw contains actions keyword - used to avoid returning inner action objects
+  const rawContainsActions =
+    text.includes('"actions"') || text.includes("'actions'") || text.includes('"actions" :') || text.includes('actions');
 
   // 1. Direct attempt: if entire response looks like JSON object
   if (text.startsWith('{') && text.endsWith('}')) {
@@ -487,7 +497,7 @@ export function extractJson(raw: string): unknown {
     }
   }
 
-  // 3. Balanced objects scan (production-grade scanner)
+  // 3. Balanced objects scan (production-grade scanner) - already scored by actions
   const balanced = extractBalancedJsonObjects(text);
   candidates.push(...balanced);
 
@@ -502,23 +512,79 @@ export function extractJson(raw: string): unknown {
     }
   }
 
-  // Deduplicate candidates while preserving order
-  const uniqueCandidates: string[] = [];
+  // Deduplicate candidates while preserving order, but also sort by actions priority
+  // We want candidates containing "actions" to be tried first
   const seen = new Set<string>();
+  const uniqueCandidates: Array<{ json: string; score: number }> = [];
   for (const c of candidates) {
     if (!seen.has(c)) {
       seen.add(c);
-      uniqueCandidates.push(c);
+      let score = c.length;
+      if (c.includes('"actions"') || c.includes("'actions'")) score += 10000;
+      if (c.includes('"message"')) score += 1000;
+      // Penalize candidates that look like single file actions (type + path + content but no actions)
+      // These are likely inner objects extracted from truncated outer JSON
+      const looksLikeSingleAction =
+        (c.includes('"type"') || c.includes("'type'")) &&
+        (c.includes('"path"') || c.includes("'path'")) &&
+        (c.includes('"content"') || c.includes("'content'")) &&
+        !c.includes('"actions"') &&
+        !c.includes("'actions'");
+      if (looksLikeSingleAction && rawContainsActions) {
+        score -= 5000; // Deprioritize inner actions when outer should exist
+      }
+      uniqueCandidates.push({ json: c, score });
     }
   }
 
-  // Try each candidate
-  for (const candidate of uniqueCandidates) {
+  // Sort by score descending - ensures actions-containing candidates tried first
+  uniqueCandidates.sort((a, b) => b.score - a.score);
+
+  // Try each candidate in score order
+  for (const { json: candidate, score } of uniqueCandidates) {
     const result = tryParseCandidate(candidate);
     if (result.parsed !== undefined) {
       // Validate it's an object
       if (typeof result.parsed === 'object' && result.parsed !== null) {
-        return result.parsed;
+        const parsedObj = result.parsed as Record<string, unknown>;
+
+        // CRITICAL: If raw contains actions keyword but this candidate doesn't have actions array,
+        // it's likely an inner action object from truncated JSON. Don't return it immediately.
+        // Instead, record diagnostic and continue searching for a candidate with actions.
+        const hasActionsArray = Array.isArray(parsedObj.actions);
+        const isSingleAction =
+          typeof parsedObj.type === 'string' && typeof parsedObj.path === 'string' && typeof parsedObj.content === 'string';
+
+        if (!hasActionsArray && rawContainsActions && isSingleAction) {
+          diagnostics.push({
+            candidatePreview: safeSnippet(candidate, 200),
+            error: `Skipped inner action object (type=${parsedObj.type}, path=${parsedObj.path}) - raw contains actions keyword but candidate missing actions array, likely truncated outer JSON`,
+          });
+          continue; // Try next candidate that might have actions array
+        }
+
+        // If candidate has actions array, return immediately (highest priority)
+        if (hasActionsArray) {
+          return result.parsed;
+        }
+
+        // If raw does NOT contain actions, it's okay to return candidate without actions
+        // (will be handled as file-content-directly or missing-actions in parseAgentResponse)
+        if (!rawContainsActions) {
+          return result.parsed;
+        }
+
+        // Raw contains actions but candidate doesn't have actions and isn't single action
+        // (e.g., candidate is {"content": "..."}), still don't return if we haven't exhausted actions candidates
+        // Collect diagnostic and continue
+        diagnostics.push({
+          candidatePreview: safeSnippet(candidate, 200),
+          error: `Candidate missing actions array but raw contains actions keyword`,
+        });
+        // If this candidate is not a single action, we still might want to return it as last resort
+        // But only after trying all higher-scored candidates
+        // For now, continue to next candidate
+        continue;
       }
     } else if (result.error) {
       diagnostics.push({
@@ -528,12 +594,27 @@ export function extractJson(raw: string): unknown {
     }
   }
 
+  // If we reach here, no candidate with actions array succeeded
+  // Check if we skipped inner action objects due to truncation - if so, report truncation
+  const hasSkippedInnerAction = diagnostics.some((d) => d.error.includes('Skipped inner action object'));
+
   // All attempts failed — build diagnostic
   const snippet = safeSnippet(raw, 500);
   const diagDetails = diagnostics
     .slice(0, 3)
     .map((d, i) => `#${i + 1} ${d.error} | preview: ${d.candidatePreview.slice(0, 100)}`)
     .join('; ');
+
+  if (hasSkippedInnerAction || rawContainsActions) {
+    throw new Error(
+      `Model response did not contain parseable JSON. ` +
+        `Tried ${uniqueCandidates.length} candidate(s) but outer JSON with actions array failed to parse (likely truncated). ` +
+        `Failures: ${diagDetails || 'no candidates found'}. ` +
+        `Snippet: ${snippet.slice(0, 300)}... ` +
+        `Hint: Response may be truncated (check maxOutputTokens, finishReason) or contain unescaped quotes/newlines inside content string. ` +
+        `Raw contains actions keyword but no valid outer JSON was found - inner action objects were skipped to avoid false file-content error.`,
+    );
+  }
 
   throw new Error(
     `Model response did not contain parseable JSON. ` +
@@ -555,7 +636,16 @@ function isValidAgentResponse(obj: unknown): boolean {
   return true;
 }
 
-/** Normalises a parsed response into the shape the pipeline expects. */
+/** Normalises a parsed response into the shape the pipeline expects.
+ *
+ * CRITICAL FIX: Validates STRUCTURE first (object, actions array, supported type, path, content, message)
+ * and ONLY rejects as raw file content if TOP-LEVEL response itself is raw file, not when content field
+ * contains file. The content field of update_file action is SUPPOSED to contain complete HTML/CSS/JS.
+ *
+ * If response parses into {actions:[{type, path, content}], message} it MUST be accepted.
+ * Never classify content of update_file action as file content directly.
+ * Remove/fix any heuristic detecting ":root {", "<!doctype html>", "function..." as raw file.
+ */
 export function parseAgentResponse(raw: string): AgentActionResponse {
   let parsed: unknown;
   try {
@@ -576,8 +666,16 @@ export function parseAgentResponse(raw: string): AgentActionResponse {
 
   const obj = parsed as Record<string, unknown>;
 
-  // If model returned array directly (just actions), wrap it
+  // If model returned array directly (just actions), wrap it - accept as valid
   if (Array.isArray(parsed)) {
+    // Validate each action in array has required structure
+    for (let i = 0; i < parsed.length; i++) {
+      const a = parsed[i] as Record<string, unknown>;
+      if (typeof a !== 'object' || a === null) continue;
+      if (typeof a.type !== 'string') {
+        throw new Error(`Action #${i} missing required "type". Snippet: ${safeSnippet(JSON.stringify(a), 150)}`);
+      }
+    }
     return {
       intent: undefined,
       plan: undefined,
@@ -586,56 +684,108 @@ export function parseAgentResponse(raw: string): AgentActionResponse {
     };
   }
 
-  // Validate required structure
-  if (!Array.isArray(obj.actions)) {
-    const hasContent = typeof obj.content === 'string' || typeof obj.text === 'string';
-    if (hasContent) {
-      throw new Error(
-        `Model returned file content directly instead of structured actions JSON. Snippet: ${safeSnippet(raw, 200)}`,
-      );
+  // STRUCTURE VALIDATION FIRST: Check if actions array exists
+  // This is the primary validation - if actions array exists, MUST accept regardless of content
+  if (Array.isArray(obj.actions)) {
+    const actions = obj.actions;
+    const message =
+      typeof obj.message === 'string' && obj.message.trim()
+        ? obj.message
+        : typeof (obj as Record<string, unknown>).explanation === 'string'
+          ? ((obj as Record<string, unknown>).explanation as string)
+          : 'Changes applied.';
+
+    // Validate each action conforms to expected schema (type, path, content)
+    // NOTE: content field is SUPPOSED to contain complete HTML/CSS/JS file, including
+    // ":root {", "<!doctype html>", "function..." etc. Never reject based on content containing those.
+    for (let i = 0; i < actions.length; i++) {
+      const a = actions[i] as Record<string, unknown>;
+      if (typeof a !== 'object' || a === null) {
+        throw new Error(`Action #${i} is not an object. Snippet: ${safeSnippet(JSON.stringify(a), 100)}`);
+      }
+      if (typeof a.type !== 'string') {
+        throw new Error(`Action #${i} missing required "type". Got: ${safeSnippet(JSON.stringify(a), 150)}`);
+      }
+      const allowedTypes = ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'];
+      if (!allowedTypes.includes(a.type as string)) {
+        // Allow but warn - don't reject unknown types strictly
+        console.warn(`[CodeForge] Unknown action type: ${a.type}`);
+      }
+      if ((a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') && typeof a.path !== 'string') {
+        throw new Error(`Action #${i} (${a.type}) missing required "path". Snippet: ${safeSnippet(JSON.stringify(a), 150)}`);
+      }
+      // content can be large HTML/CSS/JS - validate it's string if present, but NEVER check its value
+      // for file patterns like :root, doctype, function - content is SUPPOSED to be file content
+      if ((a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') && a.content !== undefined && typeof a.content !== 'string') {
+        throw new Error(`Action #${i} content must be string for ${a.type}. Got ${typeof a.content}`);
+      }
+      // message is optional string
     }
+
+    // Message validation: optional string
+    if (obj.message !== undefined && typeof obj.message !== 'string') {
+      console.warn(`[CodeForge] message field should be string, got ${typeof obj.message}, using default`);
+    }
+
+    return {
+      intent: (obj.intent as AgentActionResponse['intent']) ?? undefined,
+      plan: (obj.plan as AgentActionResponse['plan']) ?? undefined,
+      actions: actions as AgentActionResponse['actions'],
+      message,
+    };
+  }
+
+  // At this point, actions array is missing - need to determine if this is:
+  // 1. Truncated JSON where raw contains actions but we extracted inner object (should be parse error, not file content directly)
+  // 2. Genuine file content directly (model returned file without actions wrapper)
+  // 3. Missing actions array entirely
+
+  // CRITICAL: Check if raw contains actions keyword - if yes, this is NOT file content directly
+  // It's a parsing failure where outer JSON with actions failed to parse and we got inner object
+  const rawContainsActions = raw.includes('"actions"') || raw.includes("'actions'");
+  if (rawContainsActions) {
     throw new Error(
-      `Model response JSON missing required "actions" array. Got keys: ${Object.keys(obj).join(', ')}. Snippet: ${safeSnippet(raw, 200)}`,
+      `Model response did not contain parseable JSON. Diagnostic: extracted object missing actions array but raw contains actions keyword - likely truncated or inner extraction. ` +
+        `Got keys: ${Object.keys(obj).join(', ')}. Snippet: ${safeSnippet(raw, 300)}... ` +
+        `Hint: This often happens when outer JSON is truncated (check maxOutputTokens) - inner action objects were found but outer failed.`,
     );
   }
 
-  const actions = Array.isArray(obj.actions) ? obj.actions : [];
-  const message =
-    typeof obj.message === 'string' && obj.message.trim()
-      ? obj.message
-      : typeof (obj as Record<string, unknown>).explanation === 'string'
-        ? ((obj as Record<string, unknown>).explanation as string)
-        : 'Changes applied.';
-
-  // Validate actions conform to expected schema (type, path, content)
-  for (let i = 0; i < actions.length; i++) {
-    const a = actions[i] as Record<string, unknown>;
-    if (typeof a !== 'object' || a === null) {
-      throw new Error(`Action #${i} is not an object. Snippet: ${safeSnippet(JSON.stringify(a), 100)}`);
-    }
-    if (typeof a.type !== 'string') {
-      throw new Error(`Action #${i} missing required "type". Got: ${safeSnippet(JSON.stringify(a), 150)}`);
-    }
-    const allowedTypes = ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'];
-    if (!allowedTypes.includes(a.type as string)) {
-      // Allow but warn
-      console.warn(`[CodeForge] Unknown action type: ${a.type}`);
-    }
-    if ((a.type === 'create_file' || a.type === 'update_file') && typeof a.path !== 'string') {
-      throw new Error(`Action #${i} (${a.type}) missing required "path". Snippet: ${safeSnippet(JSON.stringify(a), 150)}`);
-    }
-    // content can be large HTML/CSS/JS - validate it's string if present, but don't truncate
-    if ((a.type === 'create_file' || a.type === 'update_file') && a.content !== undefined && typeof a.content !== 'string') {
-      throw new Error(`Action #${i} content must be string for ${a.type}. Got ${typeof a.content}`);
-    }
+  // Only now check if top-level response itself is raw file content
+  // Top-level is raw file if it has content/text field but no actions, AND raw does NOT contain actions keyword
+  // This is the ONLY case where we should throw file content directly error
+  const hasContent = typeof obj.content === 'string' || typeof obj.text === 'string';
+  if (hasContent) {
+    // This is genuine file content directly case: JSON like {"content": ":root {...}"} or {"text": "<html>..."}
+    // without actions array and without actions keyword in raw
+    throw new Error(
+      `Model returned file content directly instead of structured actions JSON. Snippet: ${safeSnippet(raw, 200)}`,
+    );
   }
 
-  return {
-    intent: (obj.intent as AgentActionResponse['intent']) ?? undefined,
-    plan: (obj.plan as AgentActionResponse['plan']) ?? undefined,
-    actions: actions as AgentActionResponse['actions'],
-    message,
-  };
+  // Check if raw itself looks like raw file (CSS/HTML/JS) without JSON wrapper
+  // This handles case where model returned ":root {...}" or "<!doctype html>..." directly
+  const trimmedLower = raw.trim().toLowerCase();
+  const looksLikeRawFile =
+    trimmedLower.startsWith(':root') ||
+    trimmedLower.startsWith('<!doctype') ||
+    trimmedLower.startsWith('<html') ||
+    trimmedLower.startsWith('body {') ||
+    trimmedLower.startsWith('function ') ||
+    trimmedLower.startsWith('const ') ||
+    trimmedLower.startsWith('import ') ||
+    trimmedLower.startsWith('@import') ||
+    trimmedLower.startsWith('/*');
+
+  if (looksLikeRawFile) {
+    throw new Error(
+      `Model returned file content directly instead of structured actions JSON. Snippet: ${safeSnippet(raw, 200)}`,
+    );
+  }
+
+  throw new Error(
+    `Model response JSON missing required "actions" array. Got keys: ${Object.keys(obj).join(', ')}. Snippet: ${safeSnippet(raw, 200)}`,
+  );
 }
 
 export interface ParsedRepair {
