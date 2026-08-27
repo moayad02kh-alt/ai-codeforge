@@ -253,9 +253,50 @@ const gemini = {
     }
 
     const data = await res.json();
-    const text = (data.candidates?.[0]?.content?.parts ?? [])
+    let text = (data.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('');
+
+    // Production-grade handling for Gemini structured output
+    // Even with responseMimeType application/json, Gemini can sometimes return
+    // markdown-fenced JSON or surrounding text, especially with large HTML content
+    if (jsonMode && text) {
+      // If text looks like it contains JSON but is wrapped in fences or prose, extract it
+      // Use robust scanner that respects escaped quotes and large content
+      const trimmed = text.trim();
+      // If already valid JSON, keep as is
+      try {
+        JSON.parse(trimmed);
+      } catch {
+        // Try to extract JSON from fences or surrounding text (server-side robust extraction)
+        const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fenceMatch) {
+          const inner = fenceMatch[1]?.trim();
+          if (inner) {
+            try {
+              JSON.parse(inner);
+              text = inner;
+            } catch {
+              // Keep original, frontend parser will handle
+            }
+          }
+        }
+        // If still not valid JSON but contains {"actions", try to find balanced object
+        if (text.includes('"actions"') || text.includes("'actions'")) {
+          // Server-side quick validation: check if response might be truncated
+          const openBraces = (text.match(/{/g) || []).length;
+          const closeBraces = (text.match(/}/g) || []).length;
+          if (openBraces > closeBraces) {
+            console.warn(`[codeforge] Gemini response may be truncated: ${openBraces} { vs ${closeBraces} } - finishReason: ${data.candidates?.[0]?.finishReason}`);
+          }
+        }
+      }
+    }
+
+    if (!text) {
+      const finishReason = data.candidates?.[0]?.finishReason || 'unknown';
+      throw new Error(`Gemini returned empty response (finishReason: ${finishReason}). Try again with shorter prompt or increase GEMINI_MAX_TOKENS.`);
+    }
 
     return {
       text,

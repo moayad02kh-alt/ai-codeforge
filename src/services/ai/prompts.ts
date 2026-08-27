@@ -214,139 +214,335 @@ export function buildRepairMessages(input: {
 }
 
 /* ------------------------------------------------------------------ */
-/* Response parsing - ROBUST PRODUCTION VERSION                        */
+/* Response parsing - PRODUCTION-GRADE STRUCTURED PARSER               */
 /* ------------------------------------------------------------------ */
 
 /**
- * Extracts all balanced JSON objects from text, respecting string literals.
- * Returns them sorted by length descending (largest/most complete first).
+ * Counts backslashes immediately preceding position `pos` in `str`.
+ * If odd, the char at `pos` is escaped; if even, not escaped.
+ * This correctly handles \\, \\\", \\\" etc inside JSON strings.
  */
-function extractBalancedJsonObjects(text: string): string[] {
-  const results: string[] = [];
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (ch === '{') {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === '}') {
-      depth--;
-      if (depth === 0 && start !== -1) {
-        results.push(text.slice(start, i + 1));
-        start = -1;
-      }
-      if (depth < 0) {
-        depth = 0;
-        start = -1;
-      }
-    }
+function isEscaped(str: string, pos: number): boolean {
+  let count = 0;
+  let i = pos - 1;
+  while (i >= 0 && str[i] === '\\') {
+    count++;
+    i--;
   }
-
-  // Longest first - most likely to be the full response
-  return results.sort((a, b) => b.length - a.length);
+  return count % 2 === 1;
 }
 
 /**
- * Cleans common JSON mistakes LLMs make:
- * - trailing commas in objects/arrays
- * - single quotes instead of double (only when safe)
+ * Finds the matching closing brace for a JSON object starting at `start`.
+ * `start` must point at `{`. Returns index of matching `}` or -1 if not found.
+ * Correctly handles:
+ *  - quoted strings with escaped quotes
+ *  - escaped backslashes, newlines, etc.
+ *  - nested objects/arrays
+ *  - never truncates content inside strings
  */
-function cleanJsonString(str: string): string {
-  // Remove trailing commas: ,} -> } and ,] -> ]
-  return str.replace(/,\s*([}\]])/g, '$1');
+function findObjectEnd(text: string, start: number): number {
+  if (text[start] !== '{') return -1;
+  let depth = 0;
+  let inString = false;
+  let inSingleString = false; // tolerate single-quoted (some models)
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    // Handle string boundaries
+    if (!inSingleString && ch === '"' && !isEscaped(text, i)) {
+      inString = !inString;
+      continue;
+    }
+    if (!inString && ch === "'" && !isEscaped(text, i)) {
+      // Single quotes are not valid JSON but some models use them
+      inSingleString = !inSingleString;
+      continue;
+    }
+    if (inString || inSingleString) continue;
+
+    if (ch === '{' || ch === '[') {
+      depth++;
+    } else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) {
+        // Ensure we started with { and are closing with }
+        // For object, we want matching } for the initial {
+        // Depth includes both { and [, so check we are at object close
+        // Actually depth counts both, so when depth hits 0, we've closed outermost
+        return i;
+      }
+      if (depth < 0) return -1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Extracts all balanced JSON objects from text, respecting string literals,
+ * escaped quotes, backslashes, and nested structures.
+ * Returns candidates sorted by length descending (largest first) and
+ * by whether they look like agent responses (have "actions").
+ */
+function extractBalancedJsonObjects(text: string): string[] {
+  const results: Array<{ json: string; score: number; start: number }> = [];
+  let i = 0;
+
+  while (i < text.length) {
+    const start = text.indexOf('{', i);
+    if (start === -1) break;
+
+    // Skip if this { is inside a string (check by scanning from 0 to start for unclosed string)
+    // Instead, we just try to find end; if inside string, findObjectEnd will handle
+    // but we need to ensure start is not escaped and not inside string
+    // Quick check: count if we're inside string at start by scanning from last candidate end
+    // Simpler: attempt to find end regardless; if it returns -1, move past start
+
+    const end = findObjectEnd(text, start);
+    if (end !== -1) {
+      const candidate = text.slice(start, end + 1);
+      // Score: +1000 if contains "actions", + length
+      let score = candidate.length;
+      if (candidate.includes('"actions"') || candidate.includes("'actions'")) score += 10000;
+      if (candidate.includes('"message"')) score += 1000;
+      results.push({ json: candidate, score, start });
+      // Move past this object to find next, but also allow overlapping by moving 1 char
+      // To avoid O(n^2) on huge files, jump to end
+      i = end + 1;
+    } else {
+      // No matching end found — maybe truncated. Try next {
+      i = start + 1;
+    }
+  }
+
+  // Sort by score descending, then length descending
+  results.sort((a, b) => b.score - a.score || b.json.length - a.json.length);
+
+  // Deduplicate by content
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const r of results) {
+    if (!seen.has(r.json)) {
+      seen.add(r.json);
+      deduped.push(r.json);
+    }
+  }
+
+  return deduped;
+}
+
+/**
+ * Removes trailing commas outside of strings.
+ * This fixes common LLM mistake: {"a":1,} or [1,2,]
+ * String-aware: never touches commas inside quoted strings.
+ */
+function removeTrailingCommasOutsideStrings(jsonStr: string): string {
+  let result = '';
+  let inString = false;
+  let inSingleString = false;
+
+  for (let i = 0; i < jsonStr.length; i++) {
+    const ch = jsonStr[i];
+
+    if (!inSingleString && ch === '"' && !isEscaped(jsonStr, i)) {
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+    if (!inString && ch === "'" && !isEscaped(jsonStr, i)) {
+      inSingleString = !inSingleString;
+      result += ch;
+      continue;
+    }
+
+    if (inString || inSingleString) {
+      result += ch;
+      continue;
+    }
+
+    // Outside string: check for trailing comma before } or ]
+    if (ch === ',') {
+      let j = i + 1;
+      while (j < jsonStr.length && /\s/.test(jsonStr[j])) j++;
+      if (j < jsonStr.length && (jsonStr[j] === '}' || jsonStr[j] === ']')) {
+        // Skip this comma (trailing comma)
+        continue;
+      }
+    }
+
+    result += ch;
+  }
+
+  return result;
+}
+
+/**
+ * Scrubs potential secrets from text before including in diagnostics.
+ * Prevents API keys from leaking in error messages.
+ */
+function scrubSecrets(text: string): string {
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
+    .replace(/sk-ant-[A-Za-z0-9_-]{8,}/g, 'sk-ant-***')
+    .replace(/AIza[A-Za-z0-9_-]{10,}/g, 'AIza***')
+    .replace(/key=[A-Za-z0-9_-]{8,}/gi, 'key=***')
+    .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***')
+    .replace(/"apiKey"\s*:\s*"[^"]+"/gi, '"apiKey":"***"')
+    .replace(/'apiKey'\s*:\s*'[^']+'/gi, "'apiKey':'***'");
+}
+
+/**
+ * Returns a safe snippet for diagnostics: first `max` chars, newlines escaped,
+ * secrets scrubbed, and truncated safely.
+ */
+function safeSnippet(text: string, max = 400): string {
+  const scrubbed = scrubSecrets(text);
+  const sliced = scrubbed.slice(0, max);
+  // Escape newlines for one-line display, but keep some structure
+  return sliced.replace(/\n/g, '\\n').replace(/\r/g, '\\r').slice(0, max);
+}
+
+/**
+ * Tries to parse a candidate JSON string, collecting detailed error info.
+ * Returns { parsed, error, candidate }.
+ */
+function tryParseCandidate(candidate: string): { parsed?: unknown; error?: string; candidate: string } {
+  const trimmed = candidate.trim();
+  if (!trimmed) return { error: 'Empty candidate', candidate };
+
+  // Attempt 1: direct parse
+  try {
+    const parsed = JSON.parse(trimmed);
+    return { parsed, candidate };
+  } catch (e1) {
+    const err1 = (e1 as Error).message;
+
+    // Attempt 2: remove trailing commas outside strings (common LLM error)
+    try {
+      const cleaned = removeTrailingCommasOutsideStrings(trimmed);
+      if (cleaned !== trimmed) {
+        const parsed = JSON.parse(cleaned);
+        return { parsed, candidate: cleaned };
+      }
+    } catch (e2) {
+      // Continue
+    }
+
+    // Attempt 3: try to handle single quotes around keys (some models)
+    // Only if it looks like it might be single-quoted JSON
+    if (trimmed.includes("'") && trimmed.includes('"actions"') === false) {
+      try {
+        // Very conservative: replace single-quoted keys with double-quoted
+        // This is risky, so only attempt if it looks like JSON with single quotes
+        const singleToDouble = trimmed.replace(/'([^']+)'\s*:/g, '"$1":');
+        const parsed = JSON.parse(singleToDouble);
+        return { parsed, candidate: singleToDouble };
+      } catch {
+        // Continue
+      }
+    }
+
+    return { error: err1, candidate };
+  }
 }
 
 /**
  * Extracts a JSON object from a model response.
  *
- * Production-robust: handles:
- * - Direct valid JSON
- * - Markdown fenced blocks (```json ... ``` or ``` ... ```)
- * - Multiple fenced blocks (tries each)
- * - JSON wrapped in surrounding prose (extracts balanced objects)
- * - Trailing commas
- * - First { to last } slice
- * - Validation that result looks like expected structure
+ * Production-grade:
+ * - Prefers direct JSON
+ * - Extracts from markdown fences
+ * - Uses character-by-character scanner understanding quoted strings and escaped quotes
+ * - Handles HTML/CSS/JS inside string values without truncating
+ * - Removes trailing commas only outside strings
+ * - Validates structure
+ * - Returns diagnostic with exact failure if all attempts fail
  */
 export function extractJson(raw: string): unknown {
   const text = raw.trim();
 
   if (!text) {
-    throw new Error('Model response did not contain parseable JSON');
+    throw new Error(
+      `Model response did not contain parseable JSON. Diagnostic: empty response. Snippet: ${safeSnippet(raw, 200)}`,
+    );
   }
 
-  const attempts: string[] = [];
+  const candidates: string[] = [];
+  const diagnostics: Array<{ candidatePreview: string; error: string }> = [];
 
-  // 1. Direct attempt
-  attempts.push(text);
+  // 1. Direct attempt: if entire response looks like JSON object
+  if (text.startsWith('{') && text.endsWith('}')) {
+    candidates.push(text);
+  }
 
   // 2. All fenced code blocks (```json ... ``` or ``` ... ```)
+  // This handles markdown-wrapped responses
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
   let fenceMatch: RegExpExecArray | null;
   while ((fenceMatch = fenceRegex.exec(text)) !== null) {
     const inner = fenceMatch[1]?.trim();
-    if (inner) attempts.push(inner);
+    if (inner && inner.includes('{') && inner.includes('}')) {
+      candidates.push(inner);
+    }
   }
 
-  // 3. First { to last } - common when model adds intro/outro text
+  // 3. Balanced objects scan (production-grade scanner)
+  const balanced = extractBalancedJsonObjects(text);
+  candidates.push(...balanced);
+
+  // 4. First { to last } as fallback (for surrounding prose)
   const firstBrace = text.indexOf('{');
   const lastBrace = text.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    attempts.push(text.slice(firstBrace, lastBrace + 1));
-  }
-
-  // 4. Balanced objects scan (handles nested structures correctly)
-  attempts.push(...extractBalancedJsonObjects(text));
-
-  // Try each candidate with and without cleaning
-  for (const candidate of attempts) {
-    const trimmed = candidate.trim();
-    if (!trimmed) continue;
-
-    // Try cleaned version first (fixes trailing commas)
-    const cleaned = cleanJsonString(trimmed);
-    try {
-      const parsed = JSON.parse(cleaned);
-      // Basic validation that it's an object
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed;
-      }
-    } catch {
-      // Continue
-    }
-
-    // Try original without cleaning
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed;
-      }
-    } catch {
-      // Continue to next candidate
+    const slice = text.slice(firstBrace, lastBrace + 1);
+    // Only add if not already in candidates (avoid duplicates)
+    if (!candidates.includes(slice)) {
+      candidates.push(slice);
     }
   }
 
-  // If we reach here, no valid JSON found
-  throw new Error('Model response did not contain parseable JSON');
+  // Deduplicate candidates while preserving order
+  const uniqueCandidates: string[] = [];
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    if (!seen.has(c)) {
+      seen.add(c);
+      uniqueCandidates.push(c);
+    }
+  }
+
+  // Try each candidate
+  for (const candidate of uniqueCandidates) {
+    const result = tryParseCandidate(candidate);
+    if (result.parsed !== undefined) {
+      // Validate it's an object
+      if (typeof result.parsed === 'object' && result.parsed !== null) {
+        return result.parsed;
+      }
+    } else if (result.error) {
+      diagnostics.push({
+        candidatePreview: safeSnippet(candidate, 200),
+        error: result.error,
+      });
+    }
+  }
+
+  // All attempts failed — build diagnostic
+  const snippet = safeSnippet(raw, 500);
+  const diagDetails = diagnostics
+    .slice(0, 3)
+    .map((d, i) => `#${i + 1} ${d.error} | preview: ${d.candidatePreview.slice(0, 100)}`)
+    .join('; ');
+
+  throw new Error(
+    `Model response did not contain parseable JSON. ` +
+      `Tried ${uniqueCandidates.length} candidate(s). ` +
+      `Failures: ${diagDetails || 'no candidates found'}. ` +
+      `Snippet: ${snippet.slice(0, 300)}... ` +
+      `Hint: Response may be truncated or contain unescaped quotes/newlines inside content string. ` +
+      `Ensure content is properly JSON-escaped.`,
+  );
 }
 
 /** Validates that parsed JSON looks like an agent response */
@@ -365,14 +561,17 @@ export function parseAgentResponse(raw: string): AgentActionResponse {
   try {
     parsed = extractJson(raw);
   } catch (err) {
-    // Include snippet for debugging but truncate to avoid huge logs
-    const snippet = raw.slice(0, 500).replace(/\n/g, '\\n');
-    console.error('[CodeForge] Failed to parse agent response:', snippet);
-    throw new Error(`Model response did not contain parseable JSON. Snippet: ${snippet.slice(0, 200)}...`);
+    // Include safe snippet, scrubbed
+    const snippet = safeSnippet(raw, 500);
+    console.error('[CodeForge] Failed to parse agent response:', snippet, 'Error:', (err as Error).message);
+    // Re-throw with safe diagnostic (already scrubbed in extractJson)
+    throw err;
   }
 
   if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('Model response JSON is not an object');
+    throw new Error(
+      `Model response JSON is not an object. Snippet: ${safeSnippet(JSON.stringify(parsed), 200)}`,
+    );
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -389,27 +588,47 @@ export function parseAgentResponse(raw: string): AgentActionResponse {
 
   // Validate required structure
   if (!Array.isArray(obj.actions)) {
-    // Try to recover: maybe actions is under different key or missing
-    // If we have a valid object but no actions, treat as error with helpful message
-    if (isValidAgentResponse(obj)) {
-      // Valid structure but we already checked actions, so this shouldn't happen
-    } else {
-      // Check if it's actually a repair response or other shape
-      const hasContent = typeof obj.content === 'string' || typeof obj.text === 'string';
-      if (hasContent) {
-        throw new Error('Model returned file content directly instead of structured actions JSON');
-      }
-      throw new Error('Model response JSON missing required "actions" array');
+    const hasContent = typeof obj.content === 'string' || typeof obj.text === 'string';
+    if (hasContent) {
+      throw new Error(
+        `Model returned file content directly instead of structured actions JSON. Snippet: ${safeSnippet(raw, 200)}`,
+      );
     }
+    throw new Error(
+      `Model response JSON missing required "actions" array. Got keys: ${Object.keys(obj).join(', ')}. Snippet: ${safeSnippet(raw, 200)}`,
+    );
   }
 
   const actions = Array.isArray(obj.actions) ? obj.actions : [];
   const message =
     typeof obj.message === 'string' && obj.message.trim()
       ? obj.message
-      : typeof (obj as any).explanation === 'string'
-        ? (obj as any).explanation
+      : typeof (obj as Record<string, unknown>).explanation === 'string'
+        ? ((obj as Record<string, unknown>).explanation as string)
         : 'Changes applied.';
+
+  // Validate actions conform to expected schema (type, path, content)
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i] as Record<string, unknown>;
+    if (typeof a !== 'object' || a === null) {
+      throw new Error(`Action #${i} is not an object. Snippet: ${safeSnippet(JSON.stringify(a), 100)}`);
+    }
+    if (typeof a.type !== 'string') {
+      throw new Error(`Action #${i} missing required "type". Got: ${safeSnippet(JSON.stringify(a), 150)}`);
+    }
+    const allowedTypes = ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'];
+    if (!allowedTypes.includes(a.type as string)) {
+      // Allow but warn
+      console.warn(`[CodeForge] Unknown action type: ${a.type}`);
+    }
+    if ((a.type === 'create_file' || a.type === 'update_file') && typeof a.path !== 'string') {
+      throw new Error(`Action #${i} (${a.type}) missing required "path". Snippet: ${safeSnippet(JSON.stringify(a), 150)}`);
+    }
+    // content can be large HTML/CSS/JS - validate it's string if present, but don't truncate
+    if ((a.type === 'create_file' || a.type === 'update_file') && a.content !== undefined && typeof a.content !== 'string') {
+      throw new Error(`Action #${i} content must be string for ${a.type}. Got ${typeof a.content}`);
+    }
+  }
 
   return {
     intent: (obj.intent as AgentActionResponse['intent']) ?? undefined,
@@ -432,13 +651,13 @@ export function parseRepairResponse(raw: string, fallbackPath: string): ParsedRe
   try {
     parsed = extractJson(raw);
   } catch (err) {
-    const snippet = raw.slice(0, 500).replace(/\n/g, '\\n');
-    console.error('[CodeForge] Failed to parse repair response:', snippet);
-    throw new Error(`Repair response did not contain parseable JSON. Snippet: ${snippet.slice(0, 200)}...`);
+    const snippet = safeSnippet(raw, 500);
+    console.error('[CodeForge] Failed to parse repair response:', snippet, 'Error:', (err as Error).message);
+    throw err;
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Repair response JSON is not an object');
+    throw new Error(`Repair response JSON is not an object. Snippet: ${safeSnippet(raw, 200)}`);
   }
 
   const obj = parsed as Record<string, unknown>;
