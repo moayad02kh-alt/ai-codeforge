@@ -204,7 +204,11 @@ const gemini = {
   id: 'gemini',
   label: 'Google Gemini',
   defaultModel: 'gemini-2.0-flash',
-  isConfigured: () => Boolean(process.env.GEMINI_API_KEY),
+  // Support both GEMINI_API_KEY and GOOGLE_API_KEY per official docs
+  // https://ai.google.dev/gemini-api/docs/api-key
+  // New Auth keys (AQ.) and legacy Standard keys (AIza) are both accepted
+  // isConfigured checks for any non-empty key, regardless of prefix (AIza, AQ., etc.)
+  isConfigured: () => Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
 
   async chat({ messages, model, temperature, jsonMode, signal }) {
     const base = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
@@ -222,28 +226,40 @@ const gemini = {
     const isRepair = system.toLowerCase().includes('automatic repair subsystem');
     const schema = isRepair ? GEMINI_REPAIR_SCHEMA : GEMINI_AGENT_SCHEMA;
 
-    const res = await fetch(
-      `${base}/models/${encodeURIComponent(chosen)}:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: contents.length ? contents : [{ role: 'user', parts: [{ text: 'Continue.' }] }],
-          ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-          generationConfig: {
-            temperature: temperature ?? 0.2,
-            maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 16384),
-            ...(jsonMode
-              ? {
-                  responseMimeType: 'application/json',
-                  responseSchema: schema,
-                }
-              : {}),
-          },
-        }),
-        signal,
+    // Support both legacy AIza keys and new AQ. auth keys
+    // Official docs: https://ai.google.dev/gemini-api/docs/api-key
+    // - Standard keys (AIza) and Auth keys (AQ.) both work with x-goog-api-key header
+    // - New Auth keys (AQ.) are default in AI Studio since 2026
+    // - Using header avoids "Multiple authentication credentials" error that can occur
+    //   when mixing ?key= query param with Bearer tokens on OpenAI-compatible routes
+    // - Keep ?key= as fallback for backward compatibility, but prefer header
+    // - isConfigured() checks Boolean(GEMINI_API_KEY) so both AIza and AQ. are accepted
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    const res = await fetch(`${base}/models/${encodeURIComponent(chosen)}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Current official method per docs: x-goog-api-key header
+        // Works for both AIza and new AQ. auth keys
+        'x-goog-api-key': apiKey,
       },
-    );
+      body: JSON.stringify({
+        contents: contents.length ? contents : [{ role: 'user', parts: [{ text: 'Continue.' }] }],
+        ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+        generationConfig: {
+          temperature: temperature ?? 0.2,
+          maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 16384),
+          ...(jsonMode
+            ? {
+                responseMimeType: 'application/json',
+                responseSchema: schema,
+              }
+            : {}),
+        },
+      }),
+      signal,
+    });
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
