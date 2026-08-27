@@ -31,11 +31,28 @@ services:
       - key: OPENAI_API_KEY
         sync: false
 
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # Primary provider — set to gemini to use real Gemini AI in production
+      # Falls back to first configured provider if not set
       - key: AI_PROVIDER
-        value: openai
+        value: gemini
 
       - key: OPENAI_MODEL
         value: gpt-4o
+
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-20250514
+
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+
+      - key: GEMINI_MAX_TOKENS
+        value: "16384"
 
       # Lock browser origins to this service once you know the URL, e.g.
       # https://codeforge-ai.onrender.com
