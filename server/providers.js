@@ -89,7 +89,7 @@ const anthropic = {
       },
       body: JSON.stringify({
         model: model || process.env.ANTHROPIC_MODEL || anthropic.defaultModel,
-        max_tokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 8192),
+        max_tokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 16384),
         temperature: temperature ?? 0.3,
         ...(system ? { system } : {}),
         messages: rest.length ? rest : [{ role: 'user', content: 'Continue.' }],
@@ -161,15 +161,17 @@ const GEMINI_AGENT_SCHEMA = {
     },
     actions: {
       type: 'array',
+      description: 'At least one file operation is required. For create-project requests like Todo app, include create_file actions for index.html, styles, and scripts.',
       items: {
         type: 'object',
         properties: {
           type: {
             type: 'string',
             enum: ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'],
+            description: 'The type of file operation',
           },
-          path: { type: 'string' },
-          content: { type: 'string' },
+          path: { type: 'string', description: 'Relative file path, e.g. index.html or styles/main.css' },
+          content: { type: 'string', description: 'Complete file contents for create_file/update_file' },
           reason: { type: 'string' },
           from: { type: 'string' },
           to: { type: 'string' },
@@ -177,8 +179,9 @@ const GEMINI_AGENT_SCHEMA = {
           diagnosticCode: { type: 'string' },
           analysis: { type: 'string' },
         },
-        required: ['type'],
+        required: ['type', 'path'],
       },
+      minItems: 1,
     },
     message: { type: 'string' },
   },
@@ -229,7 +232,7 @@ const gemini = {
           ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
           generationConfig: {
             temperature: temperature ?? 0.2,
-            maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 8192),
+            maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 16384),
             ...(jsonMode
               ? {
                   responseMimeType: 'application/json',

@@ -179,8 +179,43 @@ export class LLMProvider implements AIProvider {
         });
 
         const response = await this.chat('generate', messages, ctx.signal);
-        const parsed = parseAgentResponse(response.text);
+        let parsed;
+        try {
+          parsed = parseAgentResponse(response.text);
+        } catch (parseErr) {
+          console.error('[CodeForge] Parse failed, raw snippet:', response.text.slice(0, 800));
+          throw parseErr;
+        }
+
         const { valid, rejected } = validateActions(parsed.actions);
+
+        // Log validation results for debugging pipeline issues
+        if (rejected.length > 0) {
+          console.warn(`[CodeForge] ${rejected.length} actions rejected:`, rejected.map(r => r.reason).join('; '));
+        }
+
+        // Critical fix: If model returned no valid actions at all, don't silently succeed with 0 files
+        // This was causing "Plan: 0 tasks, 0 files" for valid requests like Todo app
+        if (valid.length === 0 && !parsed.actions.some((a: any) => a.type === 'inspect_file')) {
+          const rejectedInfo = rejected.length ? ` Rejected: ${rejected.map(r => r.reason).join(', ')}` : '';
+          const rawSnippet = response.text.slice(0, 600).replace(/\n/g, '\\n');
+          // If model returned empty array, throw informative error so orchestrator shows failure
+          // rather than silent 0-file success
+          if (parsed.actions.length === 0) {
+            throw new Error(
+              `Model returned no file actions for request "${ctx.prompt.slice(0, 80)}...". ` +
+              `This usually means the model needs more specific instructions or the response was truncated.${rejectedInfo} ` +
+              `Raw snippet: ${rawSnippet.slice(0, 200)}...`
+            );
+          }
+          // If all actions were rejected, also throw with details
+          if (rejected.length > 0) {
+            throw new Error(
+              `All ${rejected.length} actions were rejected by validation: ${rejected.map(r => r.reason).join('; ')}. ` +
+              `Raw: ${rawSnippet.slice(0, 200)}...`
+            );
+          }
+        }
 
         // The model asked to read files and made no changes yet — feed them
         // back and let it try again. Bounded to avoid an infinite loop.
@@ -212,16 +247,37 @@ export class LLMProvider implements AIProvider {
     ctx: GenerationContext,
   ): AgentIntent {
     const allowed = ['create-project', 'modify-project', 'fix-error', 'explain'] as const;
-    const kind = allowed.includes(raw?.kind as (typeof allowed)[number])
-      ? (raw!.kind as AgentIntent['kind'])
-      : ctx.files.length === 0
-        ? 'create-project'
-        : 'modify-project';
+    
+    // Enhanced detection for create-project requests
+    // The old logic used only files.length, which caused "Build a Todo app" to be
+    // classified as modify-project when files already exist, leading to 0 actions
+    const lowerPrompt = ctx.prompt.toLowerCase();
+    const isExplicitCreate =
+      /\b(build|create|make|scaffold|generate)\b/.test(lowerPrompt) &&
+      /\b(app|project|website|site|todo|dashboard|blog|store|landing|portfolio)\b/.test(lowerPrompt);
+    const isFromScratch = lowerPrompt.includes('from scratch') || lowerPrompt.includes('new project') || lowerPrompt.includes('simple todo');
+
+    let kind: AgentIntent['kind'];
+    if (raw?.kind && allowed.includes(raw.kind as (typeof allowed)[number])) {
+      kind = raw.kind as AgentIntent['kind'];
+      // Override: if user explicitly asks to build/create an app, force create-project
+      // even if model returned modify-project, when files exist but request is clearly for new app
+      if (isExplicitCreate && (kind === 'modify-project' || kind === 'explain')) {
+        kind = 'create-project';
+      }
+    } else {
+      // Fallback logic: if explicit create request, treat as create-project regardless of existing files
+      if (isExplicitCreate || isFromScratch) {
+        kind = 'create-project';
+      } else {
+        kind = ctx.files.length === 0 ? 'create-project' : 'modify-project';
+      }
+    }
 
     return {
       kind,
       restatement: raw?.restatement ?? ctx.prompt,
-      domain: raw?.domain ?? 'software project',
+      domain: raw?.domain ?? (lowerPrompt.includes('todo') ? 'todo' : 'software project'),
       keywords: Array.isArray(raw?.keywords) ? raw!.keywords!.slice(0, 12) : [],
       confidence: typeof raw?.confidence === 'number' ? raw!.confidence! : 0.85,
     };
@@ -232,7 +288,7 @@ export class LLMProvider implements AIProvider {
     intent: AgentIntent,
     actions: CodingAction[],
   ): AgentPlan {
-    const tasks: AgentPlanTask[] = (raw?.tasks ?? []).slice(0, 12).map((t) => ({
+    let tasks: AgentPlanTask[] = (raw?.tasks ?? []).slice(0, 12).map((t) => ({
       id: uid('task'),
       title: t.title,
       detail: t.detail ?? '',
@@ -254,18 +310,64 @@ export class LLMProvider implements AIProvider {
       }
     }
 
+    // Critical fix: Ensure we always have at least one task for create-project
+    // Previously, if actions was empty, tasks stayed empty -> "Plan: 0 tasks"
+    // Now we create fallback tasks based on intent so UI shows progress
+    if (!tasks.length) {
+      if (intent.kind === 'create-project') {
+        tasks = [
+          {
+            id: uid('task'),
+            title: 'Create index.html entry point',
+            detail: 'Main HTML structure for the application',
+            targets: ['index.html'],
+            status: 'pending',
+          },
+          {
+            id: uid('task'),
+            title: 'Create styles and layout',
+            detail: 'Responsive styling for the app',
+            targets: ['styles/main.css'],
+            status: 'pending',
+          },
+          {
+            id: uid('task'),
+            title: 'Implement core functionality',
+            detail: 'JavaScript logic for the requested features',
+            targets: ['scripts/main.js'],
+            status: 'pending',
+          },
+        ];
+      } else if (intent.kind === 'modify-project') {
+        tasks = [
+          {
+            id: uid('task'),
+            title: `Apply changes for: ${intent.restatement.slice(0, 60)}`,
+            detail: intent.domain,
+            targets: [],
+            status: 'pending',
+          },
+        ];
+      }
+    }
+
     const touched = new Set(
       actions.filter(isMutating).map((a) => ('path' in a ? a.path : a.to)),
     );
+
+    // If no files touched but we have tasks, estimate from tasks
+    const estimatedFiles = touched.size > 0 ? touched.size : tasks.length > 0 ? Math.min(tasks.length, 5) : 0;
 
     return {
       id: uid('plan'),
       summary:
         raw?.summary ??
-        `Apply ${touched.size} file change(s) in response to the request.`,
+        (intent.kind === 'create-project'
+          ? `Build a new ${intent.domain} project with ${estimatedFiles} files`
+          : `Apply ${touched.size || estimatedFiles} file change(s) in response to the request.`),
       intent,
       tasks,
-      estimatedFiles: touched.size,
+      estimatedFiles,
     };
   }
 

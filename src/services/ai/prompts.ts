@@ -67,7 +67,8 @@ repair_error  { "type": "repair_error", "path": "styles/main.css", "content": "<
 8. Write complete, working code. No TODO placeholders, no stub functions.
 9. Balance every brace, bracket and tag — the platform runs static analysis and will flag you.
 10. The "message" field is markdown shown to the user. Explain what you changed and why, briefly.
-11. CRITICAL: Return ONLY valid JSON. No explanation before or after. No markdown fences. Just the JSON object.`;
+11. CRITICAL: Return ONLY valid JSON. No explanation before or after. No markdown fences. Just the JSON object.
+12. CRITICAL: You MUST return at least one file action (create_file or update_file). Empty actions array is NEVER allowed for create-project or modify-project requests. For a Todo app, you must create index.html, styles/main.css, and scripts/main.js at minimum.`;
 
 export const REPAIR_SYSTEM_PROMPT = `You are the automatic repair subsystem of CodeForge AI.
 
