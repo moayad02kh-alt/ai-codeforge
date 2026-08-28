@@ -15,6 +15,56 @@
  */
 
 /* ------------------------------------------------------------------ */
+/* Env helpers — secret-safe, values are NEVER sent to the browser    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reads a secret from process.env and normalises it.
+ *
+ * Why this exists: on serverless hosts (Vercel) values are injected at
+ * runtime, and a mis-set value (surrounding whitespace/quotes, or the
+ * placeholder text from .env.example that slipped into a dashboard) would
+ * otherwise make `isConfigured()` return a false positive/negative.
+ *
+ * - Tries each name in order; returns the first usable value.
+ * - Trims whitespace and a single pair of surrounding quotes.
+ * - Ignores empty strings and the placeholders used in .env.example so a
+ *   copied example value can never be mistaken for a real key.
+ *
+ * Returns '' when nothing usable is set. Never throws and never logs values.
+ */
+function readEnvSecret(...names) {
+  for (const name of names) {
+    let value = process.env[name];
+    if (value === undefined || value === null) continue;
+    value = String(value).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1).trim();
+    }
+    if (!value) continue;
+    // Reject obvious placeholders (e.g. "your-gemini-key-here", "sk-your-...").
+    if (/your-.*-key|placeholder|changeme|replace-me|example|^x{4,}$/i.test(value)) continue;
+    return value;
+  }
+  return '';
+}
+
+/**
+ * Returns the NAME of the first env var (of `names`) that holds a usable
+ * value, or null. Used only for non-secret diagnostics — the value itself
+ * is never exposed.
+ */
+function firstPresentEnv(names) {
+  for (const name of names) {
+    if (readEnvSecret(name)) return name;
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
 /* OpenAI (also covers Azure OpenAI + any OpenAI-compatible endpoint)  */
 /* ------------------------------------------------------------------ */
 
@@ -22,7 +72,8 @@ const openai = {
   id: 'openai',
   label: 'OpenAI',
   defaultModel: 'gpt-4o',
-  isConfigured: () => Boolean(process.env.OPENAI_API_KEY),
+  keyNames: ['OPENAI_API_KEY'],
+  isConfigured: () => Boolean(readEnvSecret('OPENAI_API_KEY')),
 
   async chat({ messages, model, temperature, jsonMode, signal }) {
     const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -31,7 +82,7 @@ const openai = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${readEnvSecret('OPENAI_API_KEY')}`,
       },
       body: JSON.stringify({
         model: model || process.env.OPENAI_MODEL || openai.defaultModel,
@@ -69,7 +120,8 @@ const anthropic = {
   id: 'anthropic',
   label: 'Anthropic',
   defaultModel: 'claude-sonnet-4-20250514',
-  isConfigured: () => Boolean(process.env.ANTHROPIC_API_KEY),
+  keyNames: ['ANTHROPIC_API_KEY'],
+  isConfigured: () => Boolean(readEnvSecret('ANTHROPIC_API_KEY')),
 
   async chat({ messages, model, temperature, signal }) {
     const base = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1';
@@ -84,7 +136,7 @@ const anthropic = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'x-api-key': readEnvSecret('ANTHROPIC_API_KEY'),
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -200,15 +252,29 @@ const GEMINI_REPAIR_SCHEMA = {
   required: ['analysis', 'suggestion', 'path', 'content', 'confidence'],
 };
 
+// Secret env var names that can supply a Gemini key, in priority order.
+// GEMINI_API_KEY and GOOGLE_API_KEY are both supported per the official
+// docs: https://ai.google.dev/gemini-api/docs/api-key
+// The remaining names are common aliases seen in dashboards and the Google
+// Cloud / Generative AI ecosystem, so a key set under any of them is
+// recognised regardless of which label the platform UI used.
+const GEMINI_KEY_NAMES = [
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GOOGLE_GEMINI_API_KEY',
+  'GOOGLE_GENERATIVE_AI_API_KEY',
+  'GEMINI_KEY',
+];
+
 const gemini = {
   id: 'gemini',
   label: 'Google Gemini',
   defaultModel: 'gemini-2.0-flash',
-  // Support both GEMINI_API_KEY and GOOGLE_API_KEY per official docs
-  // https://ai.google.dev/gemini-api/docs/api-key
-  // New Auth keys (AQ.) and legacy Standard keys (AIza) are both accepted
-  // isConfigured checks for any non-empty key, regardless of prefix (AIza, AQ., etc.)
-  isConfigured: () => Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+  keyNames: GEMINI_KEY_NAMES,
+  // New Auth keys (AQ.) and legacy Standard keys (AIza) are both accepted.
+  // readEnvSecret accepts any non-placeholder value regardless of prefix
+  // (AIza, AQ., etc.), trims whitespace/quotes, and ignores example text.
+  isConfigured: () => Boolean(readEnvSecret(...GEMINI_KEY_NAMES)),
 
   async chat({ messages, model, temperature, jsonMode, signal }) {
     const base = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
@@ -233,8 +299,9 @@ const gemini = {
     // - Using header avoids "Multiple authentication credentials" error that can occur
     //   when mixing ?key= query param with Bearer tokens on OpenAI-compatible routes
     // - Keep ?key= as fallback for backward compatibility, but prefer header
-    // - isConfigured() checks Boolean(GEMINI_API_KEY) so both AIza and AQ. are accepted
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    // - isConfigured() uses readEnvSecret over GEMINI_KEY_NAMES so both AIza
+    //   and AQ. keys (and any recognised alias) are accepted.
+    const apiKey = readEnvSecret(...GEMINI_KEY_NAMES);
 
     const res = await fetch(`${base}/models/${encodeURIComponent(chosen)}:generateContent`, {
       method: 'POST',
@@ -349,5 +416,11 @@ export function providerStatus() {
     label: p.label,
     configured: p.isConfigured(),
     defaultModel: p.defaultModel,
+    // Non-secret diagnostic: the NAME of the env var supplying the key, if
+    // any. The key VALUE is never returned. This makes it possible to confirm
+    // in production which dashboard variable was detected (e.g. GEMINI_API_KEY
+    // vs GOOGLE_API_KEY) without exposing credentials.
+    keyNames: p.keyNames ?? [`${p.id.toUpperCase()}_API_KEY`],
+    keyEnv: p.keyNames ? firstPresentEnv(p.keyNames) : null,
   }));
 }
