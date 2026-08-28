@@ -122,8 +122,19 @@ const TRANSFORMS: Transform[] = [
         prompt.match(/\b(faq|gallery|team|testimonial|contact|newsletter|hours|location|map)\b/i)?.[1] ??
         'section';
       const title = titleCase(kind);
+      // Use a unique element id. The default kind is literally "section", so
+      // adding two generic sections would otherwise emit duplicate
+      // id="section" (and a named kind like "contact" can collide with an
+      // existing blueprint id). Append a sequential suffix until unused.
+      const base = kind.toLowerCase();
+      let sectionId = base;
+      if (html.includes(`id="${sectionId}"`)) {
+        let n = 2;
+        while (html.includes(`id="${base}-${n}"`)) n++;
+        sectionId = `${base}-${n}`;
+      }
       const block = `
-    <section class="generated-section" id="${kind.toLowerCase()}">
+    <section class="generated-section" id="${sectionId}">
       <div class="section-head">
         <span class="rule"></span>
         <h2>${title}</h2>
