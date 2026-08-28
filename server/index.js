@@ -158,14 +158,6 @@ async function handleStatus(res) {
       ? process.env[`${active.id.toUpperCase()}_MODEL`] || active.defaultModel
       : null,
     providers: providerStatus(),
-    // Non-secret diagnostic: the NAMES (never values) of provider-related env
-    // vars present in this runtime. Vercel injects dashboard variables per
-    // environment; this makes a wrong name/casing/scope visible in production
-    // without ever exposing a secret.
-    envNames: Object.keys(process.env)
-      .filter((k) => /GEMINI|GOOGLE|GENERATIVE|VERTEX|OPENAI|ANTHROPIC|^AI_PROVIDER$/.test(k))
-      .sort(),
-    runtime: process.env.VERCEL === '1' ? 'vercel' : 'node',
   });
 }
 
