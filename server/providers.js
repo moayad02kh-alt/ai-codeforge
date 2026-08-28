@@ -269,7 +269,8 @@ const GEMINI_KEY_NAMES = [
 const gemini = {
   id: 'gemini',
   label: 'Google Gemini',
-  defaultModel: 'gemini-2.0-flash',
+  // Google retired gemini-2.0-flash / gemini-2.5-flash (2026); current flash model.
+  defaultModel: 'gemini-3.6-flash',
   keyNames: GEMINI_KEY_NAMES,
   // New Auth keys (AQ.) and legacy Standard keys (AIza) are both accepted.
   // readEnvSecret accepts any non-placeholder value regardless of prefix

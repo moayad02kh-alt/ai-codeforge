@@ -16,7 +16,7 @@
  *  PRODUCTION GEMINI SETUP:
  *  - Set GEMINI_API_KEY in Vercel dashboard (Environment Variables)
  *  - Set AI_PROVIDER=gemini in Vercel dashboard
- *  - Optionally set GEMINI_MODEL=gemini-2.0-flash (default)
+ *  - Optionally set GEMINI_MODEL=gemini-3.6-flash (default)
  *  - The frontend will auto-detect via GET /api/agent/status and switch
  *    from simulated to live mode when configured
  * ─────────────────────────────────────────────────────────────────────────
