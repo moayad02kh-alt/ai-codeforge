@@ -64,6 +64,52 @@ function firstPresentEnv(names) {
   return null;
 }
 
+// Same placeholder rule used by readEnvSecret — kept in sync so diagnostics
+// reflect exactly what the loader accepts/rejects.
+const PLACEHOLDER_RE = /your-.*-key|placeholder|changeme|replace-me|example|^x{4,}$/i;
+
+/**
+ * Value-free characterization of a secret env var for production diagnostics.
+ * Reports lengths, emptiness, quote/whitespace state, and the key "kind"
+ * (AIza/AQ./sk-/other) — NEVER the value itself. Safe to return to the browser.
+ */
+function safeKeyInfo(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) {
+    return { name, present: false };
+  }
+  const rawStr = String(raw);
+  const trimmed = rawStr.trim();
+  const wasQuoted =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"));
+  let inner = trimmed;
+  if (wasQuoted) inner = trimmed.slice(1, -1).trim();
+
+  const isEmpty = inner.length === 0;
+  const isPlaceholder = !isEmpty && PLACEHOLDER_RE.test(inner);
+  const accepted = !isEmpty && !isPlaceholder;
+
+  let kind = 'other';
+  if (/^AIza/.test(inner)) kind = 'AIza(standard)';
+  else if (/^AQ\./.test(inner)) kind = 'AQ(auth)';
+  else if (/^sk-/.test(inner)) kind = 'sk';
+  else if (isEmpty) kind = 'empty';
+
+  return {
+    name,
+    present: true,
+    rawLength: rawStr.length,
+    trimmedLength: inner.length,
+    hadSurroundingWhitespace: rawStr !== rawStr.trim(),
+    wasQuoted,
+    isEmpty,
+    isPlaceholder,
+    accepted,
+    kind,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* OpenAI (also covers Azure OpenAI + any OpenAI-compatible endpoint)  */
 /* ------------------------------------------------------------------ */
@@ -422,5 +468,8 @@ export function providerStatus() {
     // vs GOOGLE_API_KEY) without exposing credentials.
     keyNames: p.keyNames ?? [`${p.id.toUpperCase()}_API_KEY`],
     keyEnv: p.keyNames ? firstPresentEnv(p.keyNames) : null,
+    // Value-free info about each candidate variable (lengths/kind only — no
+    // secret material). Shows WHY a present variable was accepted/rejected.
+    keyInfo: (p.keyNames ?? [`${p.id.toUpperCase()}_API_KEY`]).map(safeKeyInfo),
   }));
 }
