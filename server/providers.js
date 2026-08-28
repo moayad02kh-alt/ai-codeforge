@@ -186,7 +186,7 @@ const GEMINI_AGENT_SCHEMA = {
     intent: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['create-project', 'modify-project', 'fix-error', 'explain'] },
+        kind: { type: 'string', enum: ['create-project', 'modify-project', 'fix-error', 'explain', 'chat'] },
         restatement: { type: 'string' },
         domain: { type: 'string' },
         keywords: { type: 'array', items: { type: 'string' } },
@@ -213,7 +213,7 @@ const GEMINI_AGENT_SCHEMA = {
     },
     actions: {
       type: 'array',
-      description: 'At least one file operation is required. For create-project requests like Todo app, include create_file actions for index.html, styles, and scripts.',
+      description: 'File operations to execute. Required for coding requests (create-project/modify/fix): include create_file/update_file actions (e.g. index.html, styles, scripts). For pure conversation, questions, or advice — where intent.kind is "chat" or "explain" and no file change was requested — return an empty array [] and put the answer in "message".',
       items: {
         type: 'object',
         properties: {

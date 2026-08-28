@@ -69,6 +69,32 @@ function detectDomain(prompt: string): string {
   return hit ?? bp.label.toLowerCase();
 }
 
+/**
+ * Heuristic: is this a conversational turn (greeting / question / advice) with
+ * no imperative code change? Used by the offline provider so the simulated
+ * agent also supports normal back-and-forth chat, mirroring the live path.
+ */
+function looksConversational(prompt: string): boolean {
+  const p = prompt.trim().toLowerCase();
+  if (!p) return true;
+
+  // An IMPERATIVE coding instruction (not just a question mentioning a verb)
+  // wins over chit-chat detection. Imperative = starts with or clearly commands
+  // a code action ("add a contact section", "build X", "fix the bug", "make Y").
+  const imperative =
+    /^(please\s+)?(build|create|make|scaffold|generate|add|implement|code|write|edit|update|change|modify|fix|repair|refactor|remove|delete|rename|replace|convert|style|restyle|turn|set)\b/;
+  if (imperative.test(p)) return false;
+
+  // Greetings / thanks are conversation.
+  if (/^(hi|hello|hey|yo|thanks|thank you|good morning|good evening|good afternoon)\b/.test(p)) return true;
+
+  // Questions and requests for ideas/advice are conversational.
+  if (/\b(what|why|how|when|where|who|which|should i|could you explain|tell me about|what'?s|explain|describe|give me (some |an? )?(ideas?|advice|thoughts|suggestions)|recommend|suggest|help me understand|i'?m new|best way to)\b/.test(p)) {
+    return true;
+  }
+  return false;
+}
+
 /* ------------------------------------------------------------------ */
 /* Modification engine                                                 */
 /* ------------------------------------------------------------------ */
@@ -245,10 +271,18 @@ export class MockAIProvider implements AIProvider {
     const p = ctx.prompt.toLowerCase();
     const hasFiles = ctx.files.length > 0;
 
+    const isQuestion =
+      p.startsWith('what') || p.startsWith('how') || p.startsWith('why') || p.startsWith('when') ||
+      p.includes('explain') || p.includes('should i') || p.includes('best way');
+
     let kind: AgentIntent['kind'] = 'create-project';
     if (hasFiles && FIX_VERBS.some((v) => p.includes(v))) kind = 'fix-error';
+    else if (isQuestion && looksConversational(ctx.prompt))
+      kind = hasFiles && (p.startsWith('what') || p.startsWith('how') || p.startsWith('why') || p.includes('explain'))
+        ? 'explain'
+        : 'chat';
+    else if (looksConversational(ctx.prompt)) kind = 'chat';
     else if (hasFiles && MODIFY_VERBS.some((v) => p.includes(v))) kind = 'modify-project';
-    else if (p.startsWith('what') || p.startsWith('how') || p.startsWith('why') || p.includes('explain')) kind = 'explain';
     else if (hasFiles) kind = 'modify-project';
 
     const domain = detectDomain(ctx.prompt);
@@ -273,6 +307,28 @@ export class MockAIProvider implements AIProvider {
   async createPlan(ctx: GenerationContext, intent: AgentIntent): Promise<AgentPlan> {
     await sleep(jitter(520));
     const bp = selectBlueprint(ctx.prompt);
+
+    // Conversational / explanatory turns don't touch files.
+    if (intent.kind === 'chat' || intent.kind === 'explain') {
+      return {
+        id: uid('plan'),
+        summary:
+          intent.kind === 'explain'
+            ? 'Answer the question about the project without changing any files.'
+            : 'Respond to the user directly; no file changes are needed.',
+        intent,
+        tasks: [
+          {
+            id: uid('task'),
+            title: intent.kind === 'explain' ? 'Explain / answer' : 'Reply conversationally',
+            detail: intent.restatement,
+            targets: [],
+            status: 'pending',
+          },
+        ],
+        estimatedFiles: 0,
+      };
+    }
 
     if (intent.kind === 'create-project') {
       const tasks: AgentPlanTask[] = bp.taskTitles.map((title, i) => ({
@@ -333,6 +389,32 @@ export class MockAIProvider implements AIProvider {
   async generate(ctx: GenerationContext, plan: AgentPlan): Promise<GenerationResult> {
     await sleep(jitter(900));
 
+    /* ---- Conversation (no file changes) --------------------------- */
+    if (plan.intent.kind === 'chat') {
+      return {
+        files: [],
+        deletions: [],
+        message:
+          `Here's my take — happy to help. 🙂\n\n` +
+          `I can chat through ideas, answer coding questions, and give recommendations, and the moment you want something built or changed I can do that too: I can scaffold whole projects, edit existing files, run checks, and auto-repair errors.\n\n` +
+          `For example, you can ask me:\n` +
+          `- *“What's a good architecture for this feature?”*\n` +
+          `- *“Should I use localStorage or an API for saving data here?”*\n` +
+          `- *“Explain how the preview sandbox works.”*\n\n` +
+          `Then, when you're ready, say something like *“build me a todo app”* or *“make the header emerald”* and I'll make the actual changes. What would you like to do?`,
+      };
+    }
+
+    /* ---- Explain -------------------------------------------------- */
+    if (plan.intent.kind === 'explain') {
+      const list = ctx.files.map((f) => `- \`${f.path}\` — ${f.content.split('\n').length} lines`).join('\n');
+      return {
+        files: [],
+        deletions: [],
+        message: `**${ctx.projectName}** currently contains ${ctx.files.length} file(s):\n\n${list || '_(no files yet)_'}\n\nThe entry point is \`index.html\`, which loads \`styles/main.css\` for styling and \`scripts/main.js\` for behaviour. Ask me to explain any part in more depth, or just tell me what to build or change and I'll do it.`,
+      };
+    }
+
     /* ---- Create from scratch ------------------------------------- */
     if (plan.intent.kind === 'create-project') {
       const bp = selectBlueprint(ctx.prompt);
@@ -347,16 +429,6 @@ export class MockAIProvider implements AIProvider {
           completionTokens: 2400 + Math.floor(Math.random() * 900),
           costUsd: 0,
         },
-      };
-    }
-
-    /* ---- Explain -------------------------------------------------- */
-    if (plan.intent.kind === 'explain') {
-      const list = ctx.files.map((f) => `- \`${f.path}\` — ${f.content.split('\n').length} lines`).join('\n');
-      return {
-        files: [],
-        deletions: [],
-        message: `**${ctx.projectName}** currently contains ${ctx.files.length} files:\n\n${list}\n\nThe entry point is \`index.html\`, which loads \`styles/main.css\` for the design system and \`scripts/main.js\` for behaviour. Ask me to change any part of it.`,
       };
     }
 

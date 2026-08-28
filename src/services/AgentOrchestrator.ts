@@ -163,6 +163,57 @@ export class AgentOrchestrator {
       log('understand', `Restatement: ${intent.restatement.slice(0, 120)}`);
       finish('understand', 'success', intent.restatement);
 
+      /* ---- Conversational fast path ------------------------------- *
+       * A chat/explain turn is a natural-language answer, not a code
+       * change. Call the model once (reuses the provider's single-run
+       * cache), return its prose, and skip inspect/test/detect/repair/
+       * preview rebuilds. Coding, fix, and mixed turns still run the
+       * full pipeline below, so no agent feature is lost. */
+      if (intent.kind === 'chat' || intent.kind === 'explain') {
+        const isChat = intent.kind === 'chat';
+        begin(
+          'generate',
+          isChat ? 'Answering conversationally' : 'Explaining (no file changes)',
+        );
+        log('generate', `Provider: ${this.provider.label} (${this.provider.isLive ? 'live' : 'simulated'})`);
+        const convResult = await this.provider.generate(ctx, {
+          id: uid('plan'),
+          summary: isChat ? 'Respond directly; no file changes.' : 'Answer the question; no file changes.',
+          intent,
+          tasks: [],
+          estimatedFiles: 0,
+        });
+        if (aborted()) throw new DOMException('Aborted', 'AbortError');
+        message = convResult.message;
+        run.usage = convResult.usage;
+        log('generate', `Conversational reply ready (${message.length} chars) — no files modified`);
+        finish('generate', 'success', 'Answered without changing files');
+
+        // Mark the code-workflow stages as not applicable.
+        for (const phase of ['inspect', 'plan', 'apply', 'test', 'detect', 'repair', 'preview'] as AgentPhase[]) {
+          const st = stepFor(phase);
+          if (st.status === 'pending') {
+            st.status = 'skipped';
+            st.detail = 'Not needed for a conversational reply';
+            st.finishedAt = now();
+            bus.emit('run:step', { runId, step: { ...st, logs: [...st.logs] } });
+          }
+        }
+
+        begin('done', 'Finalizing reply');
+        log('done', 'Conversational turn complete — project left unchanged');
+        finish('done', 'success', 'Replied; no files changed');
+        run.status = 'succeeded';
+        run.phase = 'done';
+        run.finishedAt = now();
+        bus.emit('run:finished', { run });
+
+        // Keep the current preview as-is (no rebuild needed).
+        const previewHtml = CodeRunner.bundle(files, input.entryPath);
+        bus.emit('preview:updated', { html: previewHtml });
+        return { run, files, message, changes: [], previewHtml };
+      }
+
       /* ---- 2. Inspect --------------------------------------------- */
       begin('inspect', 'Scanning project files and building relevant context');
       log('inspect', `Project has ${input.files.length} file(s) total`);

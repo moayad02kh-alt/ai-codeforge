@@ -291,9 +291,21 @@ export class LLMProvider implements AIProvider {
           console.warn(`[CodeForge] ${rejected.length} actions rejected:`, rejected.map(r => r.reason).join('; '));
         }
 
+        // Conversational turns (chat / explain with no requested file change) legitimately
+        // return an empty actions array — the answer lives entirely in "message". Detect that
+        // from the model's stated intent so we don't treat a normal chat reply as a failure.
+        const convIntent = String(parsed.intent?.kind ?? '').toLowerCase();
+        const looksConversational =
+          convIntent === 'chat' || convIntent === 'explain' || this.looksConversational(ctx.prompt);
+
         // Critical fix: If model returned no valid actions at all, don't silently succeed with 0 files
-        // This was causing "Plan: 0 tasks, 0 files" for valid requests like Todo app
-        if (valid.length === 0 && !parsed.actions.some((a: any) => a.type === 'inspect_file')) {
+        // for CODING requests — this was causing "Plan: 0 tasks, 0 files" for requests like Todo app.
+        // But conversational turns are expected to have no actions; let those through to toResult.
+        if (
+          valid.length === 0 &&
+          !looksConversational &&
+          !parsed.actions.some((a: any) => a.type === 'inspect_file')
+        ) {
           const rejectedInfo = rejected.length ? ` Rejected: ${rejected.map(r => r.reason).join(', ')}` : '';
           const rawSnippet = response.text.slice(0, 600).replace(/\n/g, '\\n');
           // If model returned empty array, throw informative error so orchestrator shows failure
@@ -339,11 +351,33 @@ export class LLMProvider implements AIProvider {
 
   /* ---------------- normalisation ---------------- */
 
+  /**
+   * Heuristic fallback used only when the model didn't state an intent (or
+   * stated one we couldn't read): is this a pure conversational turn? True
+   * for greetings/questions/advice with no imperative build/edit/fix verbs.
+   * The model's explicit intent.kind ("chat"/"explain") always takes priority.
+   */
+  private looksConversational(prompt: string): boolean {
+    const p = prompt.trim().toLowerCase();
+    if (!p) return true;
+    // An imperative code command wins ("add a section", "build a todo app").
+    const imperative =
+      /^(please\s+)?(build|create|make|scaffold|generate|add|implement|code|write|edit|update|change|modify|fix|repair|refactor|remove|delete|rename|replace|convert|style|restyle|turn|set)\b/;
+    if (imperative.test(p)) return false;
+    // Greetings / thanks are conversation.
+    if (/^(hi|hello|hey|yo|thanks|thank you|good morning|good evening|good afternoon)\b/.test(p)) return true;
+    // Questions and requests for ideas/advice are conversational.
+    if (/\b(what|why|how|when|where|who|which|should i|could you explain|tell me about|what'?s|explain|describe|give me (some |an? )?(ideas?|advice|thoughts|suggestions)|recommend|suggest|help me understand|best way)\b/.test(p)) {
+      return true;
+    }
+    return false;
+  }
+
   private toIntent(
     raw: { kind?: string; restatement?: string; domain?: string; keywords?: string[]; confidence?: number } | undefined,
     ctx: GenerationContext,
   ): AgentIntent {
-    const allowed = ['create-project', 'modify-project', 'fix-error', 'explain'] as const;
+    const allowed = ['create-project', 'modify-project', 'fix-error', 'explain', 'chat'] as const;
     
     // Enhanced detection for create-project requests
     // The old logic used only files.length, which caused "Build a Todo app" to be
@@ -363,9 +397,12 @@ export class LLMProvider implements AIProvider {
         kind = 'create-project';
       }
     } else {
-      // Fallback logic: if explicit create request, treat as create-project regardless of existing files
+      // Fallback logic: explicit create → create-project; a non-coding
+      // question/chit-chat → chat; otherwise default to create/modify.
       if (isExplicitCreate || isFromScratch) {
         kind = 'create-project';
+      } else if (this.looksConversational(ctx.prompt)) {
+        kind = 'chat';
       } else {
         kind = ctx.files.length === 0 ? 'create-project' : 'modify-project';
       }
@@ -405,6 +442,19 @@ export class LLMProvider implements AIProvider {
           status: 'pending',
         });
       }
+    }
+
+    // Conversational turns need no file tasks — a single direct-answer task.
+    if (!tasks.length && (intent.kind === 'chat' || intent.kind === 'explain')) {
+      tasks = [
+        {
+          id: uid('task'),
+          title: intent.kind === 'explain' ? 'Answer the question about the project' : 'Respond conversationally',
+          detail: intent.restatement || 'No file changes required.',
+          targets: [],
+          status: 'pending',
+        },
+      ];
     }
 
     // Critical fix: Ensure we always have at least one task for create-project

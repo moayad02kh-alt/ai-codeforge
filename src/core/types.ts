@@ -146,7 +146,13 @@ export interface AgentPlan {
   estimatedFiles: number;
 }
 
-export type AgentIntentKind = 'create-project' | 'modify-project' | 'fix-error' | 'explain' | 'unknown';
+export type AgentIntentKind =
+  | 'create-project'
+  | 'modify-project'
+  | 'fix-error'
+  | 'explain'
+  | 'chat'
+  | 'unknown';
 
 export interface AgentIntent {
   kind: AgentIntentKind;
