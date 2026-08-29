@@ -11,7 +11,7 @@ import './Modes.css';
  * and failover notices; never touches keys.
  */
 export function ChatMode() {
-  const { chat, chatBusy, sendChat, clearChat } = useModeStore();
+  const { chat, chatBusy, sendChat, clearChat, chatStyle, setChatStyle } = useModeStore();
   const { label: liveLabel, isLive } = useProvider();
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,13 +70,41 @@ export function ChatMode() {
         ))}
         {chatBusy && (
           <div className="mode-chat__entry mode-chat__entry--assistant">
-            <div className="mode-chat__bubble mode-chat__bubble--pending">Thinking…</div>
+            <div className="mode-chat__bubble mode-chat__bubble--pending">
+              {chatStyle === 'think' ? 'Thinking deeply…' : 'Thinking…'}
+            </div>
           </div>
         )}
       </div>
 
       <footer className="mode-panel__footer">
-        <div className="mode-composer">
+        <div className="mode-composer mode-composer--stacked">
+          <div className="chat-style-toggle" role="group" aria-label="Chat style">
+            <button
+              type="button"
+              className={`chat-style-toggle__btn ${chatStyle === 'fast' ? 'is-active' : ''}`}
+              onClick={() => setChatStyle('fast')}
+              aria-pressed={chatStyle === 'fast'}
+              title="Quick answers, shown as they arrive"
+            >
+              ⚡ Fast
+            </button>
+            <button
+              type="button"
+              className={`chat-style-toggle__btn ${chatStyle === 'think' ? 'is-active' : ''}`}
+              onClick={() => setChatStyle('think')}
+              aria-pressed={chatStyle === 'think'}
+              title="Deeper step-by-step reasoning — takes a little longer"
+            >
+              🧠 Think
+            </button>
+            <span className="chat-style-toggle__hint">
+              {chatStyle === 'think'
+                ? 'Reasons step by step before answering'
+                : 'Answers stream in as they arrive'}
+            </span>
+          </div>
+          <div className="mode-composer">
           <textarea
             className="mode-composer__input"
             placeholder="Ask anything… (Enter to send, Shift+Enter for a new line)"
@@ -98,6 +126,7 @@ export function ChatMode() {
           >
             {chatBusy ? <IconX size={15} /> : <IconSend size={15} />}
           </button>
+          </div>
         </div>
       </footer>
     </div>

@@ -20,6 +20,14 @@ import { safeStorage } from '../lib/safeStorage';
 
 export type WorkspaceMode = 'agent' | 'chat' | 'image' | 'video' | 'buildapp';
 
+/**
+ * Chat AI answer style, chosen next to the composer.
+ *  - fast  ⚡ quick answers, revealed progressively as they arrive
+ *  - think 🧠 deeper step-by-step reasoning through the same provider chain
+ * Purely a Chat-AI concern — the coding agent never reads this.
+ */
+export type ChatStyle = 'fast' | 'think';
+
 export interface ChatEntry {
   id: string;
   role: 'user' | 'assistant';
@@ -45,6 +53,16 @@ export type VideoStage = 'idle' | 'starting' | 'rendering' | 'downloading' | 'do
 
 const PROMPT_HISTORY_KEY = 'cf.imagePrompts';
 const PROMPT_HISTORY_MAX = 12;
+
+/**
+ * Think-mode instruction sent as an extra system message on the SAME
+ * /api/agent/chat endpoint. Prompt-level reasoning steer only — it does not
+ * change providers, models, keys, or the server.
+ */
+const THINK_SYSTEM_PROMPT =
+  'You are in deep-thinking mode. Reason through the question step by step before answering: ' +
+  'break the problem down, weigh alternatives, check your own reasoning for mistakes, and then ' +
+  'give one clear, well-structured final answer. Prefer substance over speed; take the time you need.';
 
 function loadPromptHistory(): string[] {
   try {
@@ -81,6 +99,8 @@ interface ModeState {
   /* chat mode */
   chat: ChatEntry[];
   chatBusy: boolean;
+  chatStyle: ChatStyle;
+  setChatStyle: (style: ChatStyle) => void;
   sendChat: (prompt: string) => Promise<void>;
   clearChat: () => void;
 
@@ -132,6 +152,8 @@ export const useModeStore = create<ModeState>((set, get) => ({
   /* ---------------- chat ---------------- */
   chat: [],
   chatBusy: false,
+  chatStyle: 'fast',
+  setChatStyle: (chatStyle) => set({ chatStyle }),
   sendChat: async (prompt) => {
     const text = prompt.trim();
     if (!text || get().chatBusy) return;
@@ -139,24 +161,60 @@ export const useModeStore = create<ModeState>((set, get) => ({
     const userEntry: ChatEntry = { id: ModeApi.newId(), role: 'user', content: text, at: Date.now() };
     const history = [...get().chat, userEntry];
     set({ chat: history, chatBusy: true });
+    // Which style is active for THIS message (switching mid-flight only
+    // affects the next message).
+    const style = get().chatStyle;
     try {
-      const result = await ModeApi.chat(
-        history.map((e) => ({ role: e.role, content: e.content })),
-      );
-      set({
-        chatBusy: false,
-        chat: [
-          ...history,
-          {
-            id: ModeApi.newId(),
-            role: 'assistant',
-            content: result.text,
-            at: Date.now(),
-            providerLabel: PROVIDER_LABELS[result.provider ?? ''] ?? result.provider ?? 'AI',
-            failoverNotes: failoverNotes(result.failover, result.provider),
-          },
-        ],
-      });
+      // Think mode rides the SAME chat endpoint; the reasoning instruction is
+      // an extra system message, which every provider adapter merges into its
+      // system field. No second backend, no provider/config changes.
+      const outgoing = history.map((e) => ({ role: e.role, content: e.content }) as const);
+      const payload =
+        style === 'think'
+          ? [
+              { role: 'system' as const, content: THINK_SYSTEM_PROMPT },
+              ...outgoing.slice(-15),
+            ]
+          : outgoing;
+      const result = await ModeApi.chat(payload);
+      const reply: ChatEntry = {
+        id: ModeApi.newId(),
+        role: 'assistant',
+        content: '',
+        at: Date.now(),
+        providerLabel: PROVIDER_LABELS[result.provider ?? ''] ?? result.provider ?? 'AI',
+        failoverNotes: failoverNotes(result.failover, result.provider),
+      };
+      set({ chat: [...history, reply] });
+
+      if (style === 'think') {
+        // Present the finished answer in one clear block.
+        set({ chatBusy: false, chat: [...history, { ...reply, content: result.text }] });
+        return;
+      }
+
+      // Fast mode: reveal progressively (the chat path's existing streaming
+      // behaviour). Aborts naturally if the entry is cleared mid-reveal.
+      const tokens = result.text.match(/\S+\s*/g) ?? [result.text];
+      for (const token of tokens) {
+        const live = get().chat;
+        if (!live.some((e) => e.id === reply.id)) {
+          set({ chatBusy: false });
+          return;
+        }
+        const last = live[live.length - 1];
+        set({
+          chat: [...live.slice(0, -1), { ...last, content: last.content + token }],
+        });
+        await new Promise((r) => setTimeout(r, 8));
+      }
+      const done = get().chat;
+      if (done.some((e) => e.id === reply.id)) {
+        const last = done[done.length - 1];
+        set({ chatBusy: false, chat: [...done.slice(0, -1), { ...last, content: result.text }] });
+      } else {
+        set({ chatBusy: false });
+      }
     } catch (err) {
       const message =
         err instanceof ModeApiError && err.code === 'ALL_PROVIDERS_FAILED'

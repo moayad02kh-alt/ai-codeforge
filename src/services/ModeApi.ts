@@ -112,7 +112,7 @@ const CHAT_PATH = '/api/agent/chat';
 export const ModeApi = {
   /** General conversation — plain prose through the provider chain. */
   async chat(
-    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
     signal?: AbortSignal,
   ): Promise<ChatResult> {
     const data = await request<ChatResult>(CHAT_PATH, {
