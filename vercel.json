@@ -4,13 +4,19 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "functions": {
-    "api/agent/[action].js": {
+    "api/agent/[...action].js": {
       "maxDuration": 60
     }
   },
   "rewrites": [
-    { "source": "/api/agent/:path*", "destination": "/api/agent/:path*" },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/api/agent/:path*",
+      "destination": "/api/agent/:path*"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
   "env": {
     "AI_PROVIDER": "gemini"
