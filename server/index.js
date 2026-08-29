@@ -179,6 +179,158 @@ async function handleStatus(res) {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/* Provider payload budgeting                                          */
+/*                                                                    */
+/* Free-tier providers enforce small per-minute token limits (Groq's   */
+/* gpt-oss-120b allows 8,000 TPM), while the agent context can reach    */
+/* 24,000 tokens. Before calling ANY provider the request is measured  */
+/* and, when needed, intelligently shrunk: only files relevant to the  */
+/* user's request are kept, large files are truncated, duplicated      */
+/* messages are removed, and the shrink is progressive. A 413 from a   */
+/* provider triggers exactly one retry with a much smaller context.    */
+/* ------------------------------------------------------------------ */
+
+/** Rough token estimate (~4 chars/token) for a message array. */
+function estimateMessagesTokens(messages) {
+  return messages.reduce((n, m) => n + Math.ceil(String(m.content || '').length / 4), 0);
+}
+
+const PROMPT_STOPWORDS = new Set(['the','and','for','with','that','this','from','have','not','are','was','but','all','can','one','our','out','you','why','how','what','when','make','made','please','should','would','could','into','page','site','website','project','file','files','code','change','changes','add','create','using','use','its','their','there','they','then','than','some','more','also','very','just','like','want','need']);
+
+function promptKeywords(text) {
+  return new Set(
+    String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_\-.\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !PROMPT_STOPWORDS.has(w)),
+  );
+}
+
+/**
+ * Structure-aware shrink of agent/chat messages to a token budget.
+ * Understands the agent prompt layout ("## File contents" with
+ * "--- FILE: path ---" blocks) and keeps only the files most relevant to
+ * the user's request. Everything outside the file section — the user's
+ * actual request, diagnostics, inspections — is preserved.
+ * Returns { messages, tokens, droppedFiles, keptFiles, truncatedFiles }.
+ */
+function shrinkContextForProvider(messages, budgetTokens) {
+  const stats = { droppedFiles: 0, keptFiles: 0, truncatedFiles: 0 };
+
+  // 1) Drop duplicated messages (identical role+content sent twice).
+  const seen = new Set();
+  const deduped = messages.filter((m) => {
+    const key = `${m.role}:${m.content}`;
+    if (m.role !== 'system' && seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // 2) Cap the system prompt at a share of the budget (head+tail kept).
+  const sysCap = Math.max(800, Math.floor(budgetTokens * 0.3)) * 4;
+  const capped = deduped.map((m) => {
+    if (m.role === 'system' && m.content.length > sysCap) {
+      const keep = Math.floor(sysCap * 0.7);
+      return { ...m, content: m.content.slice(0, keep) + '\n…[system prompt trimmed to fit provider limit]…\n' + m.content.slice(-Math.floor(keep * 0.3)) };
+    }
+    return m;
+  });
+
+  // 3) Shrink the last user message — the agent request with file context.
+  const li = capped.map((m) => m.role).lastIndexOf('user');
+  if (li === -1) return { messages: capped, ...stats, tokens: estimateMessagesTokens(capped) };
+  const content = capped[li].content;
+  const filesIdx = content.indexOf('\n## File contents');
+  if (filesIdx === -1) {
+    if (estimateMessagesTokens(capped) <= budgetTokens) return { messages: capped, ...stats, tokens: estimateMessagesTokens(capped) };
+    const keep = budgetTokens * 4 * 0.8;
+    capped[li] = { ...capped[li], content: content.slice(0, keep) + '\n…[context trimmed to fit provider limit]…' };
+    return { messages: capped, ...stats, tokens: estimateMessagesTokens(capped) };
+  }
+
+  const postMatch = content.slice(filesIdx).match(/\n## (?!File contents)/);
+  const postIdx = postMatch ? filesIdx + postMatch.index : content.length;
+  const pre = content.slice(0, filesIdx);
+  const filesBlock = content.slice(filesIdx, postIdx);
+  const post = content.slice(postIdx);
+
+  const keywords = promptKeywords(post + ' ' + pre);
+  const rawParts = filesBlock.split(/\n(?=--- FILE: )/);
+  const intro = rawParts.shift() ?? '';
+  const files = rawParts.map((chunk) => {
+    const nl = chunk.indexOf('\n');
+    const header = nl === -1 ? chunk : chunk.slice(0, nl);
+    const path = header.replace(/^--- FILE: /, '').replace(/\s*\(TRUNCATED\)\s*---$|\s*---$/, '').trim();
+    return { path, chunk, score: 0 };
+  });
+  for (const f of files) {
+    let sc = 0;
+    for (const w of keywords) {
+      if (f.path.toLowerCase().includes(w)) sc += 3;
+      if (f.chunk.slice(0, 1200).toLowerCase().includes(w)) sc += 1;
+    }
+    if (/^(package\.json|index\.html|vite\.config)/i.test(f.path)) sc += 2;
+    f.score = sc;
+  }
+  files.sort((a, b) => b.score - a.score);
+
+  // 4) Progressive fit: relax per-file truncation until the estimate fits.
+  const others = [...capped.slice(0, li), ...capped.slice(li + 1)];
+  const fixedTokens = estimateMessagesTokens([...others, { role: 'user', content: pre + post }]);
+  const perFileBudgets = [Math.max(600, Math.floor((budgetTokens - fixedTokens) * 0.9)), 1200, 500];
+  let chosen = null;
+  for (const perFileTokens of perFileBudgets) {
+    const perFileChars = perFileTokens * 4;
+    const kept = [];
+    let used = 0;
+    let dropped = 0;
+    let truncated = 0;
+    for (const f of files) {
+      const cost = Math.ceil(f.chunk.length / 4);
+      const room = budgetTokens - fixedTokens - used;
+      if (cost <= room) {
+        kept.push(f);
+        used += cost;
+      } else if (perFileChars < 6000 && f.score > 0 && perFileTokens <= room) {
+        const body = f.chunk.slice(0, perFileChars);
+        kept.push({ path: f.path, chunk: body + '\n…[file truncated to fit provider limit]…', score: f.score });
+        used += perFileTokens;
+        truncated += 1;
+      } else {
+        dropped += 1;
+      }
+    }
+    chosen = { kept, dropped, truncated, used };
+    if (used <= budgetTokens - fixedTokens) break;
+  }
+
+  stats.keptFiles = chosen.kept.length;
+  stats.droppedFiles = chosen.dropped;
+  stats.truncatedFiles = chosen.truncated;
+
+  const filesSection =
+    intro.replace(/The project contains \d+ file\(s\)\..*/, `The project contains ${files.length + chosen.dropped} file(s). ${chosen.kept.length} most relevant shown below.`) +
+    '\n' +
+    chosen.kept.map((f) => f.chunk).join('\n') +
+    (chosen.dropped > 0 ? `\n…[${chosen.dropped} file(s) omitted to fit the provider context limit — ask to inspect a specific file to see it in full]…` : '');
+
+  capped[li] = { role: 'user', content: pre + filesSection + post };
+  return { messages: capped, ...stats, tokens: estimateMessagesTokens(capped) };
+}
+
+/** Input-token budget per provider (free tiers are tight; Gemini is not). */
+function inputBudgetFor(providerId) {
+  if (providerId === 'groq') {
+    const tpm = Number(process.env.GROQ_TPM_LIMIT || 8000);
+    const maxOut = Number(process.env.GROQ_MAX_TOKENS || 2048);
+    return Math.max(1200, tpm - maxOut - 450);
+  }
+  if (providerId === 'openrouter') return 6000;
+  return 100000; // large-context providers: effectively unbounded
+}
+
 async function handleChat(req, res, { jsonMode }) {
   const body = await readBody(req);
   const { messages, model, temperature } = body;
@@ -266,9 +418,9 @@ async function handleChat(req, res, { jsonMode }) {
         break;
       }
 
-      try {
-        const result = await provider.chat({
-          messages: finalMessages,
+      const attemptChat = (msgs) =>
+        provider.chat({
+          messages: msgs,
           // A client/model preference is only meaningful for the preferred
           // provider — fallbacks use their own configured default models.
           model: provider === chain[0] ? model : undefined,
@@ -279,6 +431,30 @@ async function handleChat(req, res, { jsonMode }) {
           // received them; the agent routes never send them).
           ...(wantsSearch ? { search: true } : {}),
           ...(chatImages.length ? { images: chatImages } : {}),
+        });
+
+      let result;
+      try {
+        // Budget the payload for THIS provider before sending (Groq free
+        // tier = 8k TPM; the raw agent context can be 24k+ tokens).
+        const budget = inputBudgetFor(provider.id);
+        const shrunk = shrinkContextForProvider(finalMessages, budget);
+        const kb = Math.round((shrunk.tokens * 4) / 1024);
+        console.log(
+          `[codeforge] ${provider.id} request ≈ ${shrunk.tokens} tokens (~${kb} KB)` +
+            (shrunk.droppedFiles ? ` [kept ${shrunk.keptFiles} file(s), omitted ${shrunk.droppedFiles}, truncated ${shrunk.truncatedFiles}]` : '') +
+            ` — budget ${budget}`,
+        );
+        result = await attemptChat(shrunk.messages).catch((err) => {
+          // 413 = payload still too large — retry ONCE with a much smaller
+          // context before giving up on this provider.
+          if (err?.status !== 413) throw err;
+          const tinyBudget = Math.max(1000, Math.floor(budget * 0.35));
+          const tiny = shrinkContextForProvider(finalMessages, tinyBudget);
+          console.warn(
+            `[codeforge] ${provider.id} 413 — retrying once with much smaller context ≈ ${tiny.tokens} tokens (budget ${tinyBudget})`,
+          );
+          return attemptChat(tiny.messages);
         });
 
         if (attempts.length) result.failover = attempts;

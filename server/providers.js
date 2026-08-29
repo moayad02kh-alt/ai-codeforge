@@ -600,6 +600,12 @@ function openAICompatibleAdapter(config) {
           model: chosen,
           messages,
           temperature: temperature ?? 0.3,
+          // Cap completion size: free tiers (Groq 8k TPM) count output tokens
+          // against the same per-minute budget as input. Env-overridable.
+          max_completion_tokens: Number(
+            process.env[`${config.id.toUpperCase()}_MAX_TOKENS`] ||
+              (config.id === 'groq' ? 2048 : 4096),
+          ),
           // json_object mode: Groq documents support for Llama 3.x models.
           // OpenRouter free models vary — some reject the field — so the
           // adapter only sends it when explicitly enabled via env. The
