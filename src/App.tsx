@@ -13,7 +13,7 @@ import { BuildAppMode } from './components/modes/BuildAppMode';
 import { ChatMode } from './components/modes/ChatMode';
 import { ImageMode } from './components/modes/ImageMode';
 import { VideoMode } from './components/modes/VideoMode';
-import { initProvider } from './services/registry';
+import { initProvider, setPreferredProvider } from './services/registry';
 import { useModeStore } from './state/modeStore';
 import { useStore } from './state/store';
 import './App.css';
@@ -55,7 +55,11 @@ export default function App() {
      * LLMProvider when the server reports a configured API key, otherwise
      * keeps the offline simulation. Never throws — the app stays usable
      * either way, and the UI badge updates reactively via useProvider().
+     *
+     * The persisted provider preference (Settings ▸ AI provider) is restored
+     * BEFORE probing so the initial live client is built with it.
      */
+    setPreferredProvider(useStore.getState().settings.providerPreference ?? null);
     void initProvider();
   }, [init, setSidebarOpen]);
 

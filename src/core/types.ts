@@ -308,4 +308,10 @@ export interface AgentSettings {
   streamResponses: boolean;
   apiKeySet: boolean;
   sandbox: 'iframe' | 'remote-container';
+  /**
+   * Preferred live vendor id (Settings ▸ AI provider). null/undefined =
+   * automatic — the server's default Gemini → Groq → OpenRouter Free
+   * failover chain. A non-secret provider id only; API keys never live here.
+   */
+  providerPreference?: string | null;
 }

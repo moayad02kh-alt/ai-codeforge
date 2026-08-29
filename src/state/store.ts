@@ -65,6 +65,10 @@ export const DEFAULT_SETTINGS: AgentSettings = {
   streamResponses: true,
   apiKeySet: false,
   sandbox: 'iframe',
+  /** Preferred live vendor (Settings ▸ AI provider). null = automatic
+   * (server default Gemini → Groq → OpenRouter Free failover chain). A
+   * non-secret provider id only — keys never live here. */
+  providerPreference: null,
 };
 
 interface AppState {

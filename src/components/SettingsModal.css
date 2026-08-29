@@ -438,3 +438,43 @@
     gap: 2px;
   }
 }
+
+/* provider selection (Settings ▸ AI provider) */
+.provider-chip:not(.is-configured) {
+  opacity: 0.62;
+}
+
+.provider-chip:not(.is-configured) .provider-chip__state {
+  letter-spacing: 0.02em;
+}
+
+.provider-chip__use {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-strong);
+  flex-shrink: 0;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.provider-chip__use:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.provider-grid__reset {
+  width: fit-content;
+  font-size: 11.5px;
+  color: var(--text-ghost);
+  padding: 0;
+  border-bottom: 1px dashed var(--line-strong);
+}
+
+.provider-grid__reset:hover {
+  color: var(--text-dim);
+}

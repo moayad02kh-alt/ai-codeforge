@@ -66,6 +66,27 @@ export function isLiveBackend(): boolean {
   return provider.isLive;
 }
 
+/**
+ * User's preferred live vendor (Settings ▸ AI provider). Module-level so the
+ * registry stays decoupled from the app store (which imports this module).
+ * null = automatic: the server's own Gemini → Groq → OpenRouter Free chain.
+ */
+let preferredProvider: string | null = null;
+
+/**
+ * Set the preferred live vendor and apply it immediately when a live backend
+ * is connected. Persisting the choice is the caller's job (settings store).
+ * Pass null to return to automatic selection. The value is a non-secret
+ * provider id ('gemini' | 'groq' | 'openrouter') — never a key.
+ */
+export function setPreferredProvider(id: string | null): void {
+  preferredProvider = id;
+  // Apply now if we're live: rebuild the LLM client with the new preference.
+  // The server treats the id as a chain preference (bounded failover still
+  // applies), and unknown/unconfigured ids simply fall back safely.
+  if (provider.isLive) void initProvider(true);
+}
+
 export function getBackendStatus(): BackendStatus | null {
   return backendStatus;
 }
@@ -103,13 +124,14 @@ export async function initProvider(force = false): Promise<ProviderMode> {
   backendStatus = status;
 
   if (status?.configured) {
+    const wants = preferredProvider ?? (status.activeProvider as string | null);
     setProvider(
       new LLMProvider({
         baseUrl: AGENT_API_BASE,
         label: status.activeModel
-          ? `${status.activeProvider} · ${status.activeModel}`
+          ? `${wants ?? status.activeProvider} · ${status.activeModel}`
           : 'Live model',
-        provider: (status.activeProvider as 'openai' | 'anthropic' | 'gemini') ?? undefined,
+        provider: (wants as 'openai' | 'anthropic' | 'gemini' | 'groq' | 'openrouter') ?? undefined,
       }),
     );
     return 'live';

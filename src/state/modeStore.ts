@@ -18,6 +18,7 @@ import {
 } from '../services/ModeApi';
 import { PROVIDER_LABELS } from '../services/ai/LLMProvider';
 import { safeStorage } from '../lib/safeStorage';
+import { useStore } from './store';
 
 export type WorkspaceMode = 'agent' | 'chat' | 'image' | 'video' | 'buildapp';
 
@@ -189,6 +190,8 @@ export const useModeStore = create<ModeState>((set, get) => ({
       const result = await ModeApi.chat(payload, undefined, {
         images: opts?.images,
         search: opts?.search,
+        // Follow the provider chosen in Settings ▸ AI provider (non-secret id).
+        provider: useStore.getState().settings.providerPreference ?? undefined,
       });
       const reply: ChatEntry = {
         id: ModeApi.newId(),

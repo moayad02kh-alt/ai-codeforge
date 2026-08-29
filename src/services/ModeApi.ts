@@ -129,7 +129,7 @@ export const ModeApi = {
   async chat(
     messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
     signal?: AbortSignal,
-    opts?: { images?: ChatImage[]; search?: boolean },
+    opts?: { images?: ChatImage[]; search?: boolean; provider?: string },
   ): Promise<ChatResult> {
     const data = await request<ChatResult>(CHAT_PATH, {
       method: 'POST',
@@ -137,6 +137,9 @@ export const ModeApi = {
         messages: messages.slice(-16),
         ...(opts?.images?.length ? { images: opts.images } : {}),
         ...(opts?.search ? { search: true } : {}),
+        // Non-secret provider id — the server treats it as a chain
+        // preference with its usual bounded failover.
+        ...(opts?.provider ? { provider: opts.provider } : {}),
       }),
       signal,
     });

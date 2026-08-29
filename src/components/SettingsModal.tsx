@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useProvider } from '../hooks/useProvider';
-import { useLiveProvider, useSimulatedProvider } from '../services/registry';
+import { setPreferredProvider, useLiveProvider, useSimulatedProvider } from '../services/registry';
 import { useStore } from '../state/store';
 import { IconShield, IconX } from './Icons';
 import './SettingsModal.css';
@@ -62,6 +62,18 @@ export function SettingsModal() {
    */
   const { isLive: live, label: providerLabel, status: backendStatus } = useProvider();
 
+  /** Pin (or clear, with null) the preferred live vendor. Non-secret id only. */
+  const selectProvider = (id: string | null) => {
+    updateSettings({ providerPreference: id });
+    setPreferredProvider(id);
+    if (id) {
+      const label = backendStatus?.providers.find((p) => p.id === id)?.label ?? id;
+      notify(live ? `${label} will handle live AI requests` : `${label} saved — active when Live mode connects`);
+    } else {
+      notify('Provider selection reset to automatic (Gemini first)');
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -109,7 +121,10 @@ export function SettingsModal() {
           <section className="modal__section">
             <h3>AI provider</h3>
 
-            {/* Live detection results from GET /api/agent/status */}
+            {/* Live detection results from GET /api/agent/status.
+                Chips double as the selector: "Use" pins the preferred vendor
+                (a non-secret id); unconfigured providers are never selectable
+                and always read NOT CONFIGURED. */}
             <div className="provider-grid">
               {(backendStatus?.providers ?? []).length === 0 ? (
                 <p className="provider-grid__empty">
@@ -117,34 +132,61 @@ export function SettingsModal() {
                   runs the API route alongside Vite) or <code className="mono">npm run server</code>.
                 </p>
               ) : (
-                backendStatus!.providers.map((p) => (
-                  <div
-                    key={p.id}
-                    className={`provider-chip ${p.configured ? 'is-configured' : ''} ${
-                      backendStatus?.activeProvider === p.id ? 'is-active' : ''
-                    }`}
-                  >
-                    <span className="provider-chip__dot" />
-                    <span className="provider-chip__name">{p.label}</span>
-                    <span className="provider-chip__state">
-                      {backendStatus?.activeProvider === p.id
-                        ? 'Active'
-                        : p.configured
-                          ? 'Key set'
-                          : 'No key'}
-                    </span>
-                  </div>
-                ))
+                backendStatus!.providers.map((p) => {
+                  const prefConfigured =
+                    settings.providerPreference != null &&
+                    backendStatus?.providers.some(
+                      (q) => q.id === settings.providerPreference && q.configured,
+                    );
+                  const effective = prefConfigured
+                    ? settings.providerPreference
+                    : backendStatus?.activeProvider;
+                  const isActive = effective === p.id;
+                  return (
+                    <div
+                      key={p.id}
+                      className={`provider-chip ${p.configured ? 'is-configured' : ''} ${
+                        isActive ? 'is-active' : ''
+                      }`}
+                    >
+                      <span className="provider-chip__dot" />
+                      <span className="provider-chip__name">{p.label}</span>
+                      <span className="provider-chip__state">
+                        {isActive ? 'ACTIVE' : p.configured ? 'AVAILABLE' : 'NOT CONFIGURED'}
+                      </span>
+                      {p.configured && !isActive && (
+                        <button
+                          className="provider-chip__use"
+                          onClick={() => selectProvider(p.id)}
+                          title={`Use ${p.label} for live AI requests`}
+                        >
+                          Use
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
+
+            {settings.providerPreference != null && (
+              <button
+                className="provider-grid__reset"
+                onClick={() => selectProvider(null)}
+                title="Let the server pick: Gemini → Groq → OpenRouter Free"
+              >
+                Reset to automatic (Gemini first)
+              </button>
+            )}
 
             <label className="setting">
               <span className="setting__text">
                 <span className="setting__label">Mode</span>
                 <span className="setting__hint">
-                  Force the offline simulation, or retry connecting to the live backend. The vendor
-                  itself is chosen server-side via <code className="mono">AI_PROVIDER</code> in{' '}
-                  <code className="mono">.env</code>.
+                  Force the offline simulation, or retry connecting to the live backend. Pick the
+                  vendor from the cards above; without a pick the server uses its default
+                  Gemini → Groq → OpenRouter Free order (override remains in{' '}
+                  <code className="mono">AI_PROVIDER</code>).
                 </span>
               </span>
               <div className="setting__actions">
