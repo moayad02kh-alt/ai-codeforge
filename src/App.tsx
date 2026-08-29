@@ -85,7 +85,7 @@ export default function App() {
   /* Multi-mode workspace: the coding agent keeps the full existing layout;
      the new modes (Chat/Image/Video/Build App) render in a focused view.
      Nothing below changes for the default 'agent' mode. */
-  const agentLike = mode === 'agent' || mode === 'buildapp';
+  const agentLike = mode === 'agent';
 
   return (
     <div
@@ -102,17 +102,18 @@ export default function App() {
       )}
       {!agentLike && (
         <main className="mode-host">
-          <ErrorBoundary label={mode === 'chat' ? 'Chat mode' : mode === 'image' ? 'Image mode' : 'Video mode'}>
+          <ErrorBoundary
+            label={
+              mode === 'chat' ? 'Chat mode'
+              : mode === 'image' ? 'Image mode'
+              : mode === 'buildapp' ? 'Build App mode'
+              : 'Video mode'
+            }
+          >
             {mode === 'chat' && <ChatMode />}
             {mode === 'image' && <ImageMode />}
+            {mode === 'buildapp' && <BuildAppMode />}
             {mode === 'video' && <VideoMode />}
-          </ErrorBoundary>
-        </main>
-      )}
-      {mode === 'buildapp' && (
-        <main className="mode-host">
-          <ErrorBoundary label="Build App mode">
-            <BuildAppMode />
           </ErrorBoundary>
         </main>
       )}
@@ -153,7 +154,8 @@ export default function App() {
         </ErrorBoundary>
       </main>
 
-      {/* Mobile bottom navigation */}
+      {/* Mobile bottom navigation (agent workspace panes only) */}
+      {agentLike && (
       <nav className="mobile-nav" aria-label="Panel switcher">
         {(
           [
@@ -176,6 +178,7 @@ export default function App() {
           </button>
         ))}
       </nav>
+      )}
 
       <SettingsModal />
       <Toast />

@@ -293,6 +293,15 @@ function readPrompt(prompt) {
   return { prompt: prompt.trim() };
 }
 
+/**
+ * Abort timeout for long-running generation modes. Serverless functions are
+ * killed at maxDuration (60s) with an opaque platform error, so we bound the
+ * wait ourselves slightly below it and return a real JSON error instead.
+ */
+function generationTimeoutMs() {
+  return Math.min(Number(process.env.GEN_TIMEOUT_MS || 55_000), REQUEST_TIMEOUT_MS);
+}
+
 async function handleImage(req, res) {
   const body = await readBody(req);
   const { prompt: rawPrompt, n } = body;
@@ -313,7 +322,7 @@ async function handleImage(req, res) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), generationTimeoutMs());
   const attempts = [];
   try {
     // Same bounded chain pattern as chat: preferred image provider first,
@@ -376,7 +385,7 @@ async function handleVideoStart(req, res) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), generationTimeoutMs());
   try {
     const started = await active.start({
       prompt: check.prompt,
@@ -418,7 +427,7 @@ async function handleVideoPoll(req, res, url) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), generationTimeoutMs());
   try {
     const state = await active.poll({ operation, signal: controller.signal });
     return send(res, 200, {

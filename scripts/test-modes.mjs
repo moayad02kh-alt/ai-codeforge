@@ -256,6 +256,26 @@ console.log('\n─── 6. Security: keys never in responses ──────
   check('GROQ key absent from all mode responses', !all.includes(KEY_GROQ));
 }
 
+console.log('\n─── 6b. Build App prompt composer (pure unit) ───────');
+{
+  const { buildBuildAppPrompt } = await import('../src/services/BuildAppPrompt.ts');
+  const prompt = buildBuildAppPrompt({
+    name: 'Task Tamer\nwith newline',
+    appType: 'Dashboard',
+    style: 'Dark & sleek',
+    features: ['Add/edit/delete items', 'Dark mode toggle'],
+    pages: ['Home', 'Reports'],
+    notes: 'Use indigo accents; keep it accessible',
+  });
+  check('composer embeds the cleaned app name', prompt.includes('"Task Tamer with newline"'), prompt.slice(0, 80));
+  check('composer lists features as bullets', prompt.includes('- Add/edit/delete items') && prompt.includes('- Dark mode toggle'));
+  check('composer lists pages', prompt.includes('Home, Reports'));
+  check('composer demands safeStorage + no CDNs', prompt.includes('safeStorage') && prompt.includes('no external CDNs'));
+  check('composer neutralises newlines in fields', !prompt.includes('\n\nwith'));
+  const fallback = buildBuildAppPrompt({ name: '', appType: '', style: '', features: [], pages: [], notes: '' });
+  check('composer has a sane empty-input default', fallback.includes('web app') && fallback.includes('clean and modern'));
+}
+
 console.log('\n─── 7. Agent pipeline untouched (sanity) ────────────');
 {
   // The structured agent path still works against the same vendor.

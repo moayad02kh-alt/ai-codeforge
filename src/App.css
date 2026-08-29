@@ -258,6 +258,12 @@
 
 .mode-host {
   grid-column: 1 / -1;
+  grid-row: 2;
+  /* Grid children need min-height: 0 or their content forces the row open
+     and the panel's internal overflow-y never engages. */
+  min-height: 0;
   overflow: hidden;
   background: var(--bg-base);
 }
+/* Same principle inside the panel: keep it shrinkable so scrolling works. */
+.mode-panel { min-height: 0; }
