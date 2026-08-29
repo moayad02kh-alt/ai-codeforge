@@ -3,10 +3,10 @@
  *
  *   1. POST /api/agent/chat          — plain prose via the provider chain
  *      (Gemini primary; 429 → Groq failover; failover metadata present)
- *   2. GET  /api/agent/image/status  — honest configured/not-configured
+ *   2. GET  /api/agent/image-status  — honest configured/not-configured
  *   3. POST /api/agent/image         — Gemini image adapter (fake vendor),
  *      variations honoured, clear error when not configured
- *   4. GET  /api/agent/video/status  — "Video provider not configured" by
+ *   4. GET  /api/agent/video-status  — "Video provider not configured" by
  *      default; configured=true when VIDEO_PROVIDER=veo + key
  *   5. POST /api/agent/video + GET operation — real two-phase op flow
  *      against a fake Veo vendor (start → poll → download bytes)
@@ -188,7 +188,7 @@ console.log('\n─── 1. Chat AI mode ─────────────
 
 console.log('\n─── 2. Image mode ───────────────────────────────────');
 {
-  const status = await (await fetch(`${API}/image/status`)).json();
+  const status = await (await fetch(`${API}/image-status`)).json();
   check('image status: configured via GEMINI key', status.configured === true && status.provider === 'gemini', JSON.stringify(status).slice(0, 120));
 
   const r = await post('/image', { prompt: 'a cozy cabin in the woods, watercolor', n: 2 });
@@ -211,33 +211,33 @@ console.log('\n─── 3. Image mode when NOT configured ───────
   const r = await post('/image', { prompt: 'test prompt for unconfigured' });
   const j = await r.json();
   check('unconfigured image → 503 with clear code', r.status === 503 && j.code === 'IMAGE_PROVIDER_NOT_CONFIGURED', JSON.stringify(j).slice(0, 140));
-  const status = await (await fetch(`${API}/image/status`)).json();
+  const status = await (await fetch(`${API}/image-status`)).json();
   check('unconfigured image status: honest configured=false', status.configured === false);
   process.env.GEMINI_API_KEY = saved;
 }
 
 console.log('\n─── 4. Video mode: not configured by default ────────');
 {
-  const status = await (await fetch(`${API}/video/status`)).json();
+  const status = await (await fetch(`${API}/video-status`)).json();
   check('video status: configured=false by default (honest)', status.configured === false && typeof status.hint === 'string', JSON.stringify(status).slice(0, 140));
   const r = await post('/video', { prompt: 'a timelapse of a city at dusk' });
   const j = await r.json();
   check('video generate → VIDEO_PROVIDER_NOT_CONFIGURED', r.status === 503 && j.code === 'VIDEO_PROVIDER_NOT_CONFIGURED', JSON.stringify(j).slice(0, 140));
-  const badOp = await fetch(`${API}/video/operation?name=../etc/passwd`);
+  const badOp = await fetch(`${API}/video-poll?name=../etc/passwd`);
   check('malicious operation token rejected', badOp.status === 400);
 }
 
 console.log('\n─── 5. Video mode: configured (fake Veo) ────────────');
 {
   process.env.VIDEO_PROVIDER = 'veo';
-  const status = await (await fetch(`${API}/video/status`)).json();
+  const status = await (await fetch(`${API}/video-status`)).json();
   check('video status flips to configured with VIDEO_PROVIDER=veo + key', status.configured === true && status.provider === 'veo');
 
   const r = await post('/video', { prompt: 'a timelapse of a city at dusk' });
   const j = await r.json();
   check('video start returns an operation token', r.status === 200 && j.operation === 'operations/test-op-123', JSON.stringify(j).slice(0, 140));
 
-  const poll = await (await fetch(`${API}/video/operation?name=${encodeURIComponent('operations/test-op-123')}`)).json();
+  const poll = await (await fetch(`${API}/video-poll?name=${encodeURIComponent('operations/test-op-123')}`)).json();
   check('video poll completes and downloads bytes server-side', poll.done === true && typeof poll.video?.base64 === 'string' && poll.video.base64.length > 5, JSON.stringify(poll).slice(0, 140));
   check('video mime preserved', poll.video?.mime === 'video/mp4');
   process.env.VIDEO_PROVIDER = '';
@@ -247,8 +247,8 @@ console.log('\n─── 6. Security: keys never in responses ──────
 {
   const bodies = [];
   bodies.push(JSON.stringify(await (await fetch(`${API}/status`)).json()));
-  bodies.push(JSON.stringify(await (await fetch(`${API}/image/status`)).json()));
-  bodies.push(JSON.stringify(await (await fetch(`${API}/video/status`)).json()));
+  bodies.push(JSON.stringify(await (await fetch(`${API}/image-status`)).json()));
+  bodies.push(JSON.stringify(await (await fetch(`${API}/video-status`)).json()));
   bodies.push(JSON.stringify(await (await post('/chat', { messages: [{ role: 'user', content: 'hi' }] })).json()));
   bodies.push(JSON.stringify(await (await post('/image', { prompt: 'tiny dot' })).json()));
   const all = bodies.join('');

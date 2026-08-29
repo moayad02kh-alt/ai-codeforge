@@ -127,7 +127,7 @@ export const ModeApi = {
   },
 
   imageStatus(): Promise<ModeProviderStatus> {
-    return request<ModeProviderStatus>('/api/agent/image/status');
+    return request<ModeProviderStatus>('/api/agent/image-status');
   },
 
   async generateImage(input: { prompt: string; n?: number }, signal?: AbortSignal): Promise<ImageResult> {
@@ -139,7 +139,7 @@ export const ModeApi = {
   },
 
   videoStatus(): Promise<ModeProviderStatus> {
-    return request<ModeProviderStatus>('/api/agent/video/status');
+    return request<ModeProviderStatus>('/api/agent/video-status');
   },
 
   startVideo(

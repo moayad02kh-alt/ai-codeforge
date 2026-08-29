@@ -477,20 +477,22 @@ export const server = createServer(async (req, res) => {
       return await handleChat(req, res, { jsonMode: false });
     }
     // ---- Image generation mode.
-    if (req.method === 'GET' && url.pathname === '/api/agent/image/status') {
+    // NOTE: single-segment paths only — Vercel's function routing for this
+    // project matches one segment, so status/poll use dashed names.
+    if (req.method === 'GET' && url.pathname === '/api/agent/image-status') {
       return send(res, 200, imageProviderStatus());
     }
     if (req.method === 'POST' && url.pathname === '/api/agent/image') {
       return await handleImage(req, res);
     }
     // ---- Video generation mode.
-    if (req.method === 'GET' && url.pathname === '/api/agent/video/status') {
+    if (req.method === 'GET' && url.pathname === '/api/agent/video-status') {
       return send(res, 200, videoProviderStatus());
     }
     if (req.method === 'POST' && url.pathname === '/api/agent/video') {
       return await handleVideoStart(req, res);
     }
-    if (req.method === 'GET' && url.pathname === '/api/agent/video/operation') {
+    if (req.method === 'GET' && url.pathname === '/api/agent/video-poll') {
       return await handleVideoPoll(req, res, url);
     }
     // ---- Static frontend (production single-service deploy) --------------
