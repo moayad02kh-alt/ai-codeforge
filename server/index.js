@@ -121,7 +121,7 @@ function safeErrorMessage(err) {
     .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
     .replace(/key=[A-Za-z0-9_-]{8,}/g, 'key=***')
     .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***')
-    .slice(0, 500);
+    .slice(0, 1000);
 }
 
 /** Naive in-memory rate limit — replace with Redis for multi-instance deploys. */

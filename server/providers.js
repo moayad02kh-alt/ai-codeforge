@@ -194,7 +194,7 @@ const openai = {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw Object.assign(new Error(`OpenAI ${res.status}: ${detail.slice(0, 400)}`), {
+      throw Object.assign(new Error(`OpenAI ${res.status}: ${detail.slice(0, 900)}`), {
         status: res.status,
       });
     }
@@ -250,7 +250,7 @@ const anthropic = {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw Object.assign(new Error(`Anthropic ${res.status}: ${detail.slice(0, 400)}`), {
+      throw Object.assign(new Error(`Anthropic ${res.status}: ${detail.slice(0, 900)}`), {
         status: res.status,
       });
     }
@@ -440,7 +440,7 @@ const gemini = {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw Object.assign(new Error(`Gemini ${res.status}: ${detail.slice(0, 400)}`), {
+      throw Object.assign(new Error(`Gemini ${res.status}: ${detail.slice(0, 900)}`), {
         status: res.status,
       });
     }
