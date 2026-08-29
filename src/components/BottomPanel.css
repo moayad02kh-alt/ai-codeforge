@@ -63,6 +63,7 @@
 .btab.is-active {
   background: var(--bg-raised);
   color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .btab__badge {

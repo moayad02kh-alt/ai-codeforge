@@ -531,7 +531,7 @@
 
 .composer:focus-within {
   border-color: var(--line-focus);
-  box-shadow: 0 0 0 3px var(--brand-glow);
+  box-shadow: 0 0 0 3px var(--brand-wash);
 }
 
 .composer.is-busy {
@@ -560,17 +560,17 @@
   display: grid;
   place-items: center;
   border-radius: var(--r-md);
-  background: linear-gradient(135deg, var(--brand), var(--brand-lo));
+  background: var(--brand);
   color: #fff;
   flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
   transition: transform var(--t-fast) var(--ease), filter var(--t-fast) var(--ease),
     opacity var(--t-fast) var(--ease);
   box-shadow: 0 2px 10px rgba(91, 88, 232, 0.32);
 }
 
 .composer__send:hover:not(:disabled) {
-  filter: brightness(1.12);
-  transform: scale(1.05);
+  filter: brightness(1.1);
 }
 
 .composer__send:active:not(:disabled) {

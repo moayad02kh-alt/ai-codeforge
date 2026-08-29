@@ -4,18 +4,19 @@
    ================================================================== */
 
 :root {
-  /* Surfaces — layered depth from base to floating */
-  --bg-base: #07080c;
-  --bg-sunken: #05060a;
-  --bg-panel: #0c0e14;
-  --bg-elevated: #11141c;
-  --bg-raised: #161a24;
-  --bg-hover: #1b2029;
-  --bg-active: #212734;
+  /* Surfaces — layered depth from base to floating.
+     Neutral graphite (slightly desaturated) for a calmer developer-tool feel. */
+  --bg-base: #08090d;
+  --bg-sunken: #060709;
+  --bg-panel: #0b0d12;
+  --bg-elevated: #101319;
+  --bg-raised: #151922;
+  --bg-hover: #1a1f29;
+  --bg-active: #202633;
 
   /* Lines */
-  --line: rgba(255, 255, 255, 0.07);
-  --line-strong: rgba(255, 255, 255, 0.12);
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.11);
   --line-focus: rgba(124, 122, 255, 0.55);
 
   /* Text */
@@ -51,10 +52,10 @@
     'Liberation Mono', monospace;
 
   /* Geometry */
-  --r-sm: 6px;
-  --r-md: 9px;
-  --r-lg: 13px;
-  --r-xl: 18px;
+  --r-sm: 5px;
+  --r-md: 8px;
+  --r-lg: 11px;
+  --r-xl: 15px;
   --r-full: 999px;
 
   /* Motion */
@@ -65,11 +66,11 @@
   --t: 220ms;
   --t-slow: 380ms;
 
-  /* Elevation */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.42);
-  --shadow-lg: 0 20px 56px rgba(0, 0, 0, 0.58);
-  --shadow-glow: 0 0 0 1px var(--brand-glow), 0 14px 44px rgba(91, 88, 232, 0.26);
+  /* Elevation — tight and quiet; glow is a hairline ring, not a bloom */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 16px 44px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 0 1px rgba(124, 122, 255, 0.28), 0 6px 20px rgba(0, 0, 0, 0.35);
 
   /* Layout */
   --topbar-h: 52px;
@@ -140,6 +141,11 @@ a {
 ul,
 ol {
   list-style: none;
+}
+
+/* Text selection, brand-tinted but quiet */
+::selection {
+  background: rgba(124, 122, 255, 0.28);
 }
 
 /* Accessible focus ring */

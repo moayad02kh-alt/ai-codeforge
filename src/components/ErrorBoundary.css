@@ -6,7 +6,7 @@
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: var(--bg-app, #0b0d12);
+  background: var(--bg-base);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -81,7 +81,7 @@
   padding: 12px;
   max-height: 220px;
   overflow: auto;
-  background: var(--bg-app, #0b0d12);
+  background: var(--bg-base);
   border: 1px solid var(--line, #232838);
   border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -104,7 +104,7 @@
   padding: 11px 16px;
   border-radius: 10px;
   border: 1px solid var(--line, #232838);
-  background: var(--bg-elev, #1b2030);
+  background: var(--bg-elevated);
   color: var(--text, #e6e9ef);
   font-size: 14px;
   font-weight: 600;
