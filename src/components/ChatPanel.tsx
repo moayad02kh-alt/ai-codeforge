@@ -4,7 +4,7 @@ import { useProvider } from '../hooks/useProvider';
 import { EXAMPLE_PROMPTS } from '../state/seed';
 import { selectActiveProject, selectMessages, useStore } from '../state/store';
 import { AgentTimeline } from './AgentTimeline';
-import { Dots, IconSend, IconShield, IconSparkle, IconStop, IconX } from './Icons';
+import { Dots, IconChevron, IconSend, IconShield, IconSparkle, IconStop, IconX } from './Icons';
 import { Markdown } from './Markdown';
 import './ChatPanel.css';
 
@@ -21,6 +21,8 @@ export function ChatPanel() {
 
   const [draft, setDraft] = useState('');
   const [dismissedNotice, setDismissedNotice] = useState(false);
+  /* Run details stay collapsed — the conversation is the focus. Presentational only. */
+  const [timelineOpen, setTimelineOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pinnedToBottom = useRef(true);
@@ -53,19 +55,21 @@ export function ChatPanel() {
     void sendPrompt(value);
   };
 
-  const { isLive: live, label: providerLabel, status: backendStatus } = useProvider();
+  const { isLive: live, label: providerLabel } = useProvider();
   const isEmpty = messages.length === 0;
+
+  const doneSteps = activeRun?.steps.filter((s) => s.status === 'success').length ?? 0;
 
   return (
     <section className={`chat ${chatOpen ? '' : 'is-collapsed'}`} aria-label="AI chat">
       <header className="chat__header">
         <div className="chat__header-left">
           <span className="chat__avatar" aria-hidden="true">
-            <IconSparkle size={13} />
+            <IconSparkle size={12} />
             {isBusy && <span className="chat__avatar-ring" />}
           </span>
           <div className="chat__heading">
-            <span className="chat__title">Coding Agent</span>
+            <span className="chat__title">Agent</span>
             <span className="chat__subtitle">
               {isBusy ? (
                 <>
@@ -77,6 +81,11 @@ export function ChatPanel() {
             </span>
           </div>
         </div>
+        {!live && (
+          <span className="chat__mode-pill" title="No model connected — output is simulated">
+            sim
+          </span>
+        )}
         <button
           className="chat__close"
           onClick={() => setChatOpen(false)}
@@ -89,41 +98,26 @@ export function ChatPanel() {
 
       {!live && !dismissedNotice && (
         <div className="chat__notice" role="note">
-          <IconShield size={13} />
+          <IconShield size={12} />
           <p>
-            <strong>Simulated agent.</strong> No AI model is connected. Responses and file output
-            come from a local blueprint engine, and test results are mocked — the preview, however,
-            runs your real generated code in a sandboxed iframe. To connect a real model:{' '}
-            <code className="mono">cp .env.example .env</code>, add an API key, then{' '}
-            <code className="mono">npm run dev</code>.
+            <strong>Simulated agent.</strong> Blueprint engine, no model. Connect one via{' '}
+            <code className="mono">.env</code>.
           </p>
           <button onClick={() => setDismissedNotice(true)} aria-label="Dismiss">
-            <IconX size={12} />
+            <IconX size={11} />
           </button>
         </div>
       )}
 
       {live && !dismissedNotice && (
         <div className="chat__notice chat__notice--live" role="note">
-          <IconShield size={13} />
+          <IconShield size={12} />
           <p>
-            <strong>Live model connected.</strong> {providerLabel}
-            {backendStatus?.activeProvider ? ` · via ${backendStatus.activeProvider}` : ''}. Requests
-            are proxied through the server-side API route — no API key is present in the browser.
+            <strong>{providerLabel}</strong> proxied server-side — no key in the browser.
           </p>
           <button onClick={() => setDismissedNotice(true)} aria-label="Dismiss">
-            <IconX size={12} />
+            <IconX size={11} />
           </button>
-        </div>
-      )}
-
-      {isBusy && activeRun && (
-        <div className="chat__working">
-          <span className="chat__working-spinner" />
-          <span className="chat__working-title">Agent is working...</span>
-          <span className="chat__working-phase mono">
-            {activeRun.steps.find((s) => s.status === 'active')?.title ?? 'Starting'} · {activeRun.steps.filter((s) => s.status === 'success').length}/{activeRun.steps.length}
-          </span>
         </div>
       )}
 
@@ -131,12 +125,12 @@ export function ChatPanel() {
         {isEmpty && !activeRun ? (
           <div className="chat__empty">
             <span className="chat__empty-mark" aria-hidden="true">
-              <IconSparkle size={22} />
+              <IconSparkle size={20} />
             </span>
             <h2>What are we building?</h2>
             <p>
-              Describe a project in plain language. The agent will plan it, generate the files, run
-              checks and show you a live preview.
+              Describe a project in plain language. The agent plans it, generates the files, runs
+              checks and shows a live preview.
             </p>
             <div className="chat__examples">
               {EXAMPLE_PROMPTS.map((prompt) => (
@@ -148,7 +142,6 @@ export function ChatPanel() {
                     textareaRef.current?.focus();
                   }}
                 >
-                  <IconSparkle size={11} />
                   {prompt}
                 </button>
               ))}
@@ -168,11 +161,15 @@ export function ChatPanel() {
               const isUser = message.role === 'user';
               return (
                 <article className={`msg ${isUser ? 'msg--user' : 'msg--agent'}`} key={message.id}>
-                  <div className="msg__meta">
-                    <span className="msg__author">{isUser ? 'You' : 'Agent'}</span>
-                    <span className="msg__time mono">{formatTime(message.createdAt)}</span>
-                  </div>
-                  <div className="msg__bubble">
+                  {!isUser && (
+                    <span className="msg__who" aria-hidden="true">
+                      <IconSparkle size={10} />
+                    </span>
+                  )}
+                  <div
+                    className="msg__bubble"
+                    title={formatTime(message.createdAt)}
+                  >
                     {message.content ? (
                       <Markdown content={message.content} />
                     ) : (
@@ -188,7 +185,25 @@ export function ChatPanel() {
 
             {activeRun && (
               <div className="chat__timeline">
-                <AgentTimeline run={activeRun} />
+                <button
+                  className={`run-details ${timelineOpen ? 'is-open' : ''}`}
+                  onClick={() => setTimelineOpen((o) => !o)}
+                  aria-expanded={timelineOpen}
+                >
+                  <span className="run-details__label">
+                    {activeRun.status === 'running' ? 'Working' : 'Run details'}
+                  </span>
+                  <span className="run-details__meta mono">
+                    {doneSteps}/{activeRun.steps.length} steps
+                    {activeRun.changes.length > 0 && ` · ${activeRun.changes.length} file(s)`}
+                  </span>
+                  <IconChevron size={12} className={`run-details__chev ${timelineOpen ? 'is-open' : ''}`} />
+                </button>
+                {timelineOpen && (
+                  <div className="run-details__body">
+                    <AgentTimeline run={activeRun} />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -210,7 +225,7 @@ export function ChatPanel() {
             }}
             placeholder={
               project?.files.length
-                ? 'Describe a change — "make the accent colour emerald", "add an FAQ section"…'
+                ? 'Describe a change — "make the accent colour emerald"…'
                 : 'Describe the project you want to build…'
             }
             rows={1}
@@ -229,11 +244,11 @@ export function ChatPanel() {
               title="Send (Enter)"
               aria-label="Send message"
             >
-              <IconSend size={15} />
+              <IconSend size={14} />
             </button>
           )}
         </div>
-        <p className="composer__hint">
+        <p className="composer__hint" aria-hidden="true">
           <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
         </p>
       </footer>

@@ -1,14 +1,17 @@
+/* ==================================================================
+   TopBar — quiet command bar: identity · modes · project · view · actions
+   ================================================================== */
+
 .topbar {
   grid-area: topbar;
   height: var(--topbar-h);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 0 12px 0 10px;
-  background: rgba(11, 13, 18, 0.92);
+  gap: 10px;
+  padding: 0 10px 0 10px;
+  background: var(--bg-panel);
   border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(14px);
   z-index: 40;
   position: relative;
 }
@@ -25,11 +28,19 @@
   flex-shrink: 0;
 }
 
+/* Left cluster may compress on narrow phones; clip gracefully instead of
+   pushing the bar wider than the viewport. */
+.topbar__left {
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
 .topbar__divider {
   width: 1px;
-  height: 20px;
-  background: var(--line-strong);
+  height: 18px;
+  background: var(--line);
   margin: 0 2px;
+  flex-shrink: 0;
 }
 
 /* ---------------- Brand ---------------- */
@@ -38,32 +49,30 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-left: 2px;
   flex-shrink: 0;
 }
 
 .brand__mark {
-  width: 25px;
-  height: 25px;
-  border-radius: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
   display: grid;
   place-items: center;
-  background: var(--brand-lo);
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), var(--shadow-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  color: var(--brand-hi);
 }
 
 .brand__name {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 640;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
 .brand__ai {
-  color: var(--text-faint);
+  color: var(--text-ghost);
   font-weight: 500;
-  margin-left: 1px;
 }
 
 /* ---------------- Project name ---------------- */
@@ -72,10 +81,11 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  max-width: 240px;
+  min-width: 0;
+  max-width: 220px;
   padding: 5px 10px;
   border-radius: var(--r-md);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-dim);
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
@@ -86,105 +96,53 @@
   color: var(--text);
 }
 
+.topbar__project .truncate {
+  min-width: 0;
+}
+
 .topbar__dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--warn);
   flex-shrink: 0;
-  animation: pulse-soft 2.2s ease-in-out infinite;
 }
 
 .topbar__rename {
-  width: 210px;
+  width: 200px;
   padding: 5px 10px;
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   border: 1px solid var(--line-focus);
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--text);
+  font-size: 12.5px;
 }
 
-/* ---------------- Badge ---------------- */
+/* ---------------- Connection badge ---------------- */
 
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px 3px 6px;
+  padding: 2.5px 8px;
   border-radius: var(--r-full);
   font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 
-.badge--sim {
-  background: var(--warn-wash);
-  color: var(--warn);
-  border: 1px solid rgba(251, 191, 36, 0.24);
-}
-
 .badge--live {
-  background: var(--ok-wash);
   color: var(--ok);
-  border: 1px solid rgba(52, 211, 153, 0.26);
+  background: var(--ok-wash);
 }
 
-/* ---------------- Buttons ---------------- */
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  border-radius: var(--r-md);
-  font-size: 12.5px;
-  font-weight: 550;
-  color: var(--text-dim);
-  border: 1px solid transparent;
-  white-space: nowrap;
-  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+.badge--sim {
+  color: var(--text-faint);
+  background: var(--bg-active);
 }
 
-.btn:active {
-  transform: scale(0.97);
-}
-
-.btn--ghost {
-  background: var(--bg-elevated);
-  border-color: var(--line);
-}
-
-.btn--ghost:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-  border-color: var(--line-strong);
-}
-
-.btn--primary {
-  background: linear-gradient(135deg, var(--brand), var(--brand-lo));
-  color: #fff;
-  box-shadow: 0 2px 10px rgba(91, 88, 232, 0.34);
-}
-
-.btn--primary:hover {
-  filter: brightness(1.1);
-}
-
-.btn--danger {
-  background: var(--err-wash);
-  color: var(--err);
-  border-color: rgba(248, 113, 113, 0.3);
-}
-
-.btn--danger:hover {
-  background: rgba(248, 113, 113, 0.2);
-}
+/* ---------------- Icon buttons ---------------- */
 
 .topbar__icon-btn {
   width: 30px;
@@ -201,26 +159,150 @@
   color: var(--text);
 }
 
-.topbar__hamburger {
-  display: none;
+.topbar__icon-btn svg {
+  transition: transform var(--t-fast) var(--ease);
 }
 
-/* ---------------- Segmented control ---------------- */
+.topbar__icon-btn svg.is-open {
+  transform: rotate(180deg);
+}
+
+/* ---------------- Buttons (local primitives) ---------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 560;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.btn--primary {
+  background: var(--brand);
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn--primary:hover {
+  background: var(--brand-lo);
+}
+
+.btn--ghost {
+  color: var(--text-dim);
+  border: 1px solid transparent;
+}
+
+.btn--ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn--danger {
+  background: var(--err);
+  color: #fff;
+}
+
+.btn--danger:hover {
+  filter: brightness(1.08);
+}
+
+/* ---------------- Overflow menu ---------------- */
+
+.topbar__menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.topbar__menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  padding: 5px;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-lg);
+  animation: scale-in var(--t-fast) var(--ease-out);
+  z-index: 60;
+}
+
+.topbar__menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-align: left;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+
+.topbar__menu-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.topbar__menu-item span {
+  flex: 1;
+}
+
+.topbar__menu-kbd {
+  font-size: 10px;
+  color: var(--text-ghost);
+}
+
+.topbar__menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--line);
+}
+
+/* ---------------- Responsive ---------------- */
+
+@media (max-width: 1180px) {
+  .topbar__project { max-width: 150px; }
+}
+
+@media (max-width: 980px) {
+  .btn__label { display: none; }
+  .btn { padding: 0 9px; }
+  .topbar__project { display: none; }
+  .topbar__divider { display: none; }
+}
+
+@media (max-width: 640px) {
+  .badge { display: none; }
+  .brand__name { display: none; }
+  .segmented__item { height: 28px; padding: 0 9px; font-size: 11.5px; }
+}
+
+/* ---------------- View switcher (Code · Split · Preview) ---------------- */
 
 .segmented {
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
+  border-radius: var(--r-md);
   background: var(--bg-sunken);
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
 }
 
 .segmented__item {
-  padding: 4px 12px;
-  border-radius: 6px;
+  height: 24px;
+  padding: 0 11px;
+  border-radius: var(--r-sm);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   color: var(--text-faint);
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
@@ -232,45 +314,17 @@
 .segmented__item.is-active {
   background: var(--bg-raised);
   color: var(--text);
-  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-sm);
 }
 
-/* ---------------- Responsive ---------------- */
-
-@media (max-width: 1180px) {
-  .btn__label {
-    display: none;
-  }
-  .btn {
-    padding: 0 9px;
-  }
-}
-
-@media (max-width: 1024px) {
-  .topbar__hamburger {
-    display: grid;
-  }
-  .segmented {
-    display: none;
-  }
+.topbar__hamburger {
+  flex-shrink: 0;
 }
 
 @media (max-width: 640px) {
-  .topbar {
-    padding: 0 8px;
-    gap: 6px;
-  }
-  .brand__name {
-    display: none;
-  }
-  .topbar__divider {
-    display: none;
-  }
-  .topbar__project {
-    max-width: 130px;
-    font-size: 12.5px;
-  }
-  .badge {
-    display: none;
+  .segmented__item {
+    height: 26px;
+    padding: 0 9px;
   }
 }

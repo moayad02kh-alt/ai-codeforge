@@ -3,6 +3,7 @@ import { selectActiveProject, useStore } from '../state/store';
 import { useProvider } from '../hooks/useProvider';
 import {
   IconBolt,
+  IconChevron,
   IconEye,
   IconMenu,
   IconPlay,
@@ -33,6 +34,10 @@ export function TopBar() {
   const [draft, setDraft] = useState(project?.name ?? '');
   const inputRef = useRef<HTMLInputElement>(null);
 
+  /* Overflow menu — presentational state only; every action keeps its handler. */
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (editing) {
       inputRef.current?.focus();
@@ -40,12 +45,28 @@ export function TopBar() {
     }
   }, [editing]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
   const commitRename = () => {
     if (project && draft.trim()) renameProject(project.id, draft.trim());
     setEditing(false);
   };
 
-  const { isLive: live, label: providerLabel, status: backendStatus } = useProvider();
+  const { isLive: live, label: providerLabel } = useProvider();
 
   return (
     <header className="topbar">
@@ -60,12 +81,14 @@ export function TopBar() {
 
         <div className="brand">
           <span className="brand__mark" aria-hidden="true">
-            <IconSparkle size={15} />
+            <IconSparkle size={14} />
           </span>
           <span className="brand__name">
             CodeForge<span className="brand__ai"> AI</span>
           </span>
         </div>
+
+        <ModeSwitcher />
 
         <span className="topbar__divider" aria-hidden="true" />
 
@@ -109,8 +132,6 @@ export function TopBar() {
         </span>
       </div>
 
-        <ModeSwitcher />
-
       <div className="topbar__right">
         <div className="segmented" role="tablist" aria-label="Workspace view">
           {(['code', 'split', 'preview'] as const).map((tab) => (
@@ -132,34 +153,64 @@ export function TopBar() {
             <span className="btn__label">Stop</span>
           </button>
         ) : (
-          <button className="btn btn--ghost" onClick={runProject} title="Build and run (⌘R)">
+          <button className="btn btn--primary" onClick={runProject} title="Build and run (⌘R)">
             <IconPlay size={13} />
             <span className="btn__label">Run</span>
           </button>
         )}
 
-        <button
-          className="btn btn--ghost"
-          onClick={() => setMainTab('preview')}
-          title="Open the live preview"
-        >
-          <IconEye size={14} />
-          <span className="btn__label">Preview</span>
-        </button>
+        <div className="topbar__menu" ref={menuRef}>
+          <button
+            className="topbar__icon-btn"
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="More actions"
+            aria-expanded={menuOpen}
+            title="More actions"
+          >
+            <IconChevron size={15} className={menuOpen ? 'is-open' : ''} />
+          </button>
 
-        <button className="btn btn--ghost" onClick={saveProject} title="Save checkpoint (⌘S)">
-          <IconSave size={14} />
-          <span className="btn__label">Save</span>
-        </button>
-
-        <button
-          className="topbar__icon-btn"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Settings"
-          title="Settings"
-        >
-          <IconSettings size={16} />
-        </button>
+          {menuOpen && (
+            <div className="topbar__menu-list" role="menu">
+              <button
+                className="topbar__menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setMainTab('preview');
+                }}
+              >
+                <IconEye size={14} />
+                <span>Open preview</span>
+              </button>
+              <button
+                className="topbar__menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  saveProject();
+                }}
+              >
+                <IconSave size={14} />
+                <span>Save checkpoint</span>
+                <kbd className="topbar__menu-kbd mono">⌘S</kbd>
+              </button>
+              <div className="topbar__menu-sep" aria-hidden="true" />
+              <button
+                className="topbar__menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setSettingsOpen(true);
+                }}
+              >
+                <IconSettings size={14} />
+                <span>Settings</span>
+                <kbd className="topbar__menu-kbd mono">⌘,</kbd>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
