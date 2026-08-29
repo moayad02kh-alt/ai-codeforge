@@ -331,6 +331,46 @@ function inputBudgetFor(providerId) {
   return 100000; // large-context providers: effectively unbounded
 }
 
+/* ------------------------------------------------------------------ */
+/* Provider rate-limit state                                           */
+/*                                                                    */
+/* A 429 from a provider puts it on cooldown (Retry-After honoured,    */
+/* otherwise exponential: 5s → 10s → 20s → … capped at 120s). Requests */
+/* during cooldown SKIP the provider entirely — repeated Agent clicks  */
+/* never hammer a rate-limited API. Success resets the strike count.   */
+/* State is per server instance (best-effort on serverless; a cold     */
+/* start simply starts with clean cooldowns). Never contains secrets.  */
+/* ------------------------------------------------------------------ */
+
+const providerCooldowns = new Map();
+
+function rateLimitCooldownMs(providerId) {
+  const base = Number(process.env.RATE_LIMIT_COOLDOWN_BASE_MS || 5000);
+  const cap = Number(process.env.RATE_LIMIT_COOLDOWN_MAX_MS || 120_000);
+  const strikes = providerCooldowns.get(providerId)?.strikes ?? 0;
+  return Math.min(base * 2 ** strikes, cap);
+}
+
+function markProviderRateLimited(providerId, retryAfterSeconds) {
+  // Honour the provider's own Retry-After when present (bounded 3 min);
+  // otherwise use our exponential backoff schedule.
+  const ms = retryAfterSeconds
+    ? Math.min(retryAfterSeconds * 1000, 180_000)
+    : rateLimitCooldownMs(providerId);
+  const strikes = (providerCooldowns.get(providerId)?.strikes ?? 0) + 1;
+  providerCooldowns.set(providerId, { until: Date.now() + ms, strikes });
+  console.warn(
+    `[codeforge] ${providerId} rate-limited (429) — cooling down ${Math.round(ms / 1000)}s (strike ${strikes})` +
+      (retryAfterSeconds ? ` [provider Retry-After: ${retryAfterSeconds}s]` : ''),
+  );
+  return ms;
+}
+
+function providerCooldownRemainingMs(providerId) {
+  const until = providerCooldowns.get(providerId)?.until ?? 0;
+  return Math.max(0, until - Date.now());
+}
+
 async function handleChat(req, res, { jsonMode }) {
   const body = await readBody(req);
   const { messages, model, temperature } = body;
@@ -410,12 +450,27 @@ async function handleChat(req, res, { jsonMode }) {
 
   try {
     const started = Date.now();
+    let skippedForCooldown = 0;
     for (const provider of chain) {
       if (controller.signal.aborted) break;
       // Never start a provider attempt without a realistic time budget.
       if (attempts.length > 0 && Date.now() > chainDeadline) {
         console.warn('[codeforge] provider chain budget exhausted — stopping failover');
         break;
+      }
+      // Rate-limit cooldown: a provider that keeps returning 429 (3+ strikes
+      // across consecutive requests) is shielded entirely until its cooldown
+      // expires — repeated Agent clicks then cost ZERO upstream calls. The
+      // exponential schedule (base × 2^strikes) makes the shield longer with
+      // each new 429. One attempt per provider per request remains the
+      // sanctioned bounded behaviour for the first strikes.
+      const coolingMs = providerCooldownRemainingMs(provider.id);
+      const strikes = providerCooldowns.get(provider.id)?.strikes ?? 0;
+      const shielded = coolingMs > 0 && strikes >= 3;
+      if (shielded) {
+        skippedForCooldown += 1;
+        console.log(`[codeforge] ${provider.id} cooling down ${Math.ceil(coolingMs / 1000)}s more — skipping`);
+        continue;
       }
 
       const attemptChat = (msgs) =>
@@ -470,15 +525,51 @@ async function handleChat(req, res, { jsonMode }) {
           ...(result.grounded ? { grounded: true, sources: result.sources ?? [] } : {}),
         });
         return;
+        providerCooldowns.delete(provider.id);
       } catch (err) {
         // A client abort is not a provider failure — stop immediately.
         if (err?.name === 'AbortError') throw err;
+        // A rate limit is not like other failures: put the provider on
+        // cooldown so this and follow-up requests stop hitting it.
+        if (err?.status === 429) markProviderRateLimited(provider.id, err.retryAfterSeconds);
         attempts.push({ provider: provider.id, status: err?.status ?? 0, error: safeErrorMessage(err) });
         console.error(
           `[codeforge] ${provider.id} failed (failover ${attempts.length}/${chain.length}):`,
           safeErrorMessage(err),
         );
       }
+    }
+
+    // All real providers are rate-limited (some possibly still cooling down
+    // from very recent 429s): a clear, honest, temporary error — never a
+    // simulated answer.
+    const allRateLimited =
+      chain.length > 0 &&
+      skippedForCooldown + attempts.length === chain.length &&
+      attempts.every((a) => a.status === 429 || a.status === undefined);
+    if (allRateLimited) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil(
+          Math.min(
+            ...chain.map((p) => {
+              const ms = providerCooldownRemainingMs(p.id);
+              return ms > 0 ? ms : rateLimitCooldownMs(p.id);
+            }),
+          ) / 1000,
+        ),
+      );
+      const seen = attempts.map((a) => `${a.provider} (${a.status})`).join(', ');
+      console.warn(`[codeforge] all providers rate-limited [${seen || 'cooldown'}] — returning temporary 429`);
+      send(res, 429, {
+        error:
+          `All configured AI providers are rate-limited right now${seen ? ` (${seen})` : ''}. ` +
+          `This is temporary — the request will succeed if you retry in ~${retryAfterSeconds}s. ` +
+          `No simulated fallback was used because real providers are configured.`,
+        code: 'ALL_RATE_LIMITED',
+        retryAfterSeconds,
+      });
+      return;
     }
 
     // Every configured provider failed — one clear, honest error.

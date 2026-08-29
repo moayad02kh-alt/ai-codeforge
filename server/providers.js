@@ -463,8 +463,10 @@ const gemini = {
           `server environment: it must be a valid, active key from Google AI Studio ` +
           `(starts with 'AIza' or 'AQ.'), pasted without quotes, then redeploy.`;
       }
+      const retryAfterSeconds = Number(res.headers.get('retry-after')) || undefined;
       throw Object.assign(new Error(message), {
         status: res.status,
+        ...(res.status === 429 && retryAfterSeconds ? { retryAfterSeconds } : {}),
       });
     }
 
@@ -659,8 +661,10 @@ function openAICompatibleAdapter(config) {
             `from ${config.keyHome ?? 'the provider console'} (for ${config.label} it starts ` +
             `with '${config.keySample ?? 'sk-'}'), pasted without quotes, then redeploy.`;
         }
+        const retryAfterSeconds = Number(res.headers.get('retry-after')) || undefined;
         throw Object.assign(new Error(message), {
           status: res.status,
+          ...(res.status === 429 && retryAfterSeconds ? { retryAfterSeconds } : {}),
         });
       }
 
@@ -733,7 +737,20 @@ export const PROVIDERS = { openai, anthropic, gemini, groq, openrouter };
  */
 export function providerChain(preferred) {
   const wanted = preferred || process.env.AI_PROVIDER;
-  const order = [gemini, groq, openrouter, openai, anthropic];
+  const defaultOrder = [gemini, groq, openrouter, openai, anthropic];
+  // Optional env override of the fallback order, e.g.
+  // PROVIDER_CHAIN="gemini,groq,openrouter". Named providers come first
+  // (still filtered to CONFIGURED ones below); unlisted configured
+  // providers remain as a last resort in their default order.
+  const envChain = (process.env.PROVIDER_CHAIN || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => PROVIDERS[id])
+    .filter(Boolean);
+  const order = envChain.length
+    ? [...envChain, ...defaultOrder.filter((p) => !envChain.includes(p))]
+    : defaultOrder;
   const chain = [];
   const push = (p) => {
     if (p && p.isConfigured() && !chain.includes(p)) chain.push(p);

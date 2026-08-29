@@ -261,6 +261,9 @@ export class LLMProvider implements AIProvider {
           code === 'UPSTREAM_ERROR' ||
           code === 'UPSTREAM_TIMEOUT' ||
           code === 'ALL_PROVIDERS_FAILED' ||
+          // Every real provider is rate-limited (server sends retryAfterSeconds
+          // and puts providers on cooldown) — same bounded delayed-retry class.
+          code === 'ALL_RATE_LIMITED' ||
           code.startsWith('HTTP_5');
         const isTransient = TRANSIENT_UPSTREAM.has(res.status) && isUpstream;
         if (isTransient && attempt === 1 && !signal?.aborted) {
