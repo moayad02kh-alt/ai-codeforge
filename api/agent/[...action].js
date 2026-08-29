@@ -21,10 +21,13 @@
  *    from simulated to live mode when configured
  * ─────────────────────────────────────────────────────────────────────────
  *
- * Routes handled (via the [action] dynamic segment):
+ * Routes handled (via the [...action] catch-all, so multi-segment paths
+ * like /api/agent/image/status route correctly on Vercel):
  *   GET  /api/agent/status
- *   POST /api/agent/generate
- *   POST /api/agent/repair
+ *   POST /api/agent/generate | /api/agent/repair | /api/agent/chat
+ *   GET  /api/agent/image/status        POST /api/agent/image
+ *   GET  /api/agent/video/status        POST /api/agent/video
+ *   GET  /api/agent/video/operation
  */
 
 // Vercel function config — allow up to 60s for Gemini responses
