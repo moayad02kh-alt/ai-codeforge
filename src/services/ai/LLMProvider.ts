@@ -23,6 +23,7 @@ import { uid } from '../../core/utils';
 import {
   ActionExecutor,
   isMutating,
+  normalizeActions,
   validateActions,
   type CodingAction,
 } from './actions';
@@ -83,6 +84,8 @@ interface RunCache {
   plan?: AgentPlan;
   result?: GenerationResult;
   error?: Error;
+  /** Notes from action normalisation (recovered/converted actions). */
+  notes?: string[];
 }
 
 export class LLMProvider implements AIProvider {
@@ -263,6 +266,9 @@ export class LLMProvider implements AIProvider {
       let inspections: Array<{ path: string; found: boolean; content?: string }> = [];
       let files = ctx.files;
       let round = 0;
+      let recoveryNote: string | null = null;
+      let recoveryAttempted = false;
+      const allNotes: string[] = [];
 
       for (;;) {
         const messages = buildAgentMessages({
@@ -275,6 +281,15 @@ export class LLMProvider implements AIProvider {
           entryPath: 'index.html',
         });
 
+        // Corrective retry: append the recovery instructions to the last user
+        // message (kept in-message so vendor role alternation stays intact).
+        if (recoveryNote) {
+          const last = messages[messages.length - 1];
+          if (last && last.role === 'user') {
+            last.content += `\n\n## Correction required for your previous response\n${recoveryNote}`;
+          }
+        }
+
         const response = await this.chat('generate', messages, ctx.signal);
         let parsed;
         try {
@@ -284,7 +299,18 @@ export class LLMProvider implements AIProvider {
           throw parseErr;
         }
 
-        const { valid, rejected } = validateActions(parsed.actions);
+        // Normalise BEFORE validating: repair aliased/wrapped/missing content
+        // and near-miss types so well-intentioned actions pass validation
+        // instead of rejecting the whole run. Unfixable update_file/repair_error
+        // actions become inspect_file, which the bounded loop below satisfies
+        // by feeding the file back to the model.
+        const normalized = normalizeActions(parsed.actions, files);
+        allNotes.push(...normalized.notes);
+        if (normalized.notes.length) {
+          console.warn('[CodeForge] Normalised model actions:', normalized.notes.join(' | '));
+        }
+
+        const { valid, rejected } = validateActions(normalized.actions);
 
         // Log validation results for debugging pipeline issues
         if (rejected.length > 0) {
@@ -304,24 +330,47 @@ export class LLMProvider implements AIProvider {
         if (
           valid.length === 0 &&
           !looksConversational &&
-          !parsed.actions.some((a: any) => a.type === 'inspect_file')
+          !parsed.actions.some((a: any) => a.type === 'inspect_file') &&
+          !valid.some((a) => a.type === 'inspect_file') // normaliser-converted inspections
         ) {
           const rejectedInfo = rejected.length ? ` Rejected: ${rejected.map(r => r.reason).join(', ')}` : '';
+
+          // Safe bounded retry instead of rejecting the entire run: give the
+          // model ONE corrective round describing exactly what validation
+          // expected. Normalisation has already salvaged what it could.
+          if (!recoveryAttempted) {
+            recoveryAttempted = true;
+            const problems = rejected.length
+              ? rejected.map((r) => `- ${r.reason}`).join('\n')
+              : '- The "actions" array was empty or missing.';
+            recoveryNote = [
+              'Your previous response could not be executed — every action failed validation:',
+              problems,
+              '',
+              'Return the same JSON structure again with these fixes:',
+              '- Every create_file, update_file and repair_error action MUST include a "content" field containing the COMPLETE new file contents as a non-empty string.',
+              '- Never send diffs, patches, ellipses or placeholders — "content" replaces the entire file.',
+              '- If you need to see a file before editing it, return an inspect_file action and stop.',
+            ].join('\n');
+            console.warn('[CodeForge] All actions rejected — attempting one corrective retry.');
+            continue;
+          }
+
           const rawSnippet = response.text.slice(0, 600).replace(/\n/g, '\\n');
           // If model returned empty array, throw informative error so orchestrator shows failure
           // rather than silent 0-file success
           if (parsed.actions.length === 0) {
             throw new Error(
-              `Model returned no file actions for request "${ctx.prompt.slice(0, 80)}...". ` +
-              `This usually means the model needs more specific instructions or the response was truncated.${rejectedInfo} ` +
-              `Raw snippet: ${rawSnippet.slice(0, 200)}...`
+              `Model returned no file actions for request "${ctx.prompt.slice(0, 80)}..." ` +
+              `(a corrective retry was attempted and also produced no actions).` +
+              `${rejectedInfo} Raw snippet: ${rawSnippet.slice(0, 200)}...`
             );
           }
           // If all actions were rejected, also throw with details
           if (rejected.length > 0) {
             throw new Error(
-              `All ${rejected.length} actions were rejected by validation: ${rejected.map(r => r.reason).join('; ')}. ` +
-              `Raw: ${rawSnippet.slice(0, 200)}...`
+              `All ${rejected.length} actions were rejected by validation, including after a corrective retry: ` +
+              `${rejected.map(r => r.reason).join('; ')}. Raw: ${rawSnippet.slice(0, 200)}...`
             );
           }
         }
@@ -340,7 +389,7 @@ export class LLMProvider implements AIProvider {
 
         cache.intent = this.toIntent(parsed.intent, ctx);
         cache.plan = this.toPlan(parsed.plan, cache.intent, valid);
-        cache.result = this.toResult(files, valid, rejected, parsed.message, response);
+        cache.result = this.toResult(files, valid, rejected, parsed.message, response, allNotes);
         return cache;
       }
     } catch (err) {
@@ -524,6 +573,7 @@ export class LLMProvider implements AIProvider {
     rejected: Array<{ action: unknown; reason: string }>,
     message: string,
     response: ChatResponse,
+    notes: string[] = [],
   ): GenerationResult {
     const exec = ActionExecutor.execute(files, actions);
 
@@ -544,6 +594,11 @@ export class LLMProvider implements AIProvider {
 
     let finalMessage = message;
 
+    if (notes.length) {
+      finalMessage += `\n\n> 🛠️ ${notes.length} action(s) needed automatic repair before applying:\n${notes
+        .map((n) => `> - ${n}`)
+        .join('\n')}`;
+    }
     if (rejected.length) {
       finalMessage += `\n\n> ⚠️ ${rejected.length} action(s) were rejected by validation and not applied:\n${rejected
         .map((r) => `> - ${r.reason}`)
@@ -609,9 +664,13 @@ export class LLMProvider implements AIProvider {
     const parsed = parseRepairResponse(response.text, diagnostic.file);
 
     // Never let a repair write outside the project or blank a file.
-    const { valid } = validateActions([
-      { type: 'repair_error', path: parsed.path, content: parsed.content },
-    ]);
+    // Normalise first so alias-keyed content/paths from the model are recovered
+    // before validation decides.
+    const { actions: normalizedRepairs } = normalizeActions(
+      [{ type: 'repair_error', path: parsed.path, content: parsed.content }],
+      ctx.files,
+    );
+    const { valid } = validateActions(normalizedRepairs);
 
     if (!valid.length || !parsed.content.trim()) {
       return {

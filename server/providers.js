@@ -223,7 +223,10 @@ const GEMINI_AGENT_SCHEMA = {
             description: 'The type of file operation',
           },
           path: { type: 'string', description: 'Relative file path, e.g. index.html or styles/main.css' },
-          content: { type: 'string', description: 'Complete file contents for create_file/update_file' },
+          content: {
+            type: 'string',
+            description: 'REQUIRED and MUST be non-empty for create_file, update_file and repair_error: the COMPLETE new file contents as a single string (the full file — never a diff, snippet, placeholder, or omission). Omit entirely for delete_file/rename_file/inspect_file/run_check.',
+          },
           reason: { type: 'string' },
           from: { type: 'string' },
           to: { type: 'string' },
@@ -231,6 +234,10 @@ const GEMINI_AGENT_SCHEMA = {
           diagnosticCode: { type: 'string' },
           analysis: { type: 'string' },
         },
+        // Field generation order hint: content is emitted immediately after
+        // type+path so truncation is far less likely to drop the required
+        // content of an action while the budget is spent on prose fields.
+        propertyOrdering: ['type', 'path', 'content', 'reason', 'from', 'to', 'check', 'diagnosticCode', 'analysis'],
         required: ['type', 'path'],
       },
       minItems: 1,
@@ -238,6 +245,9 @@ const GEMINI_AGENT_SCHEMA = {
     message: { type: 'string' },
   },
   required: ['actions', 'message'],
+  // Emit actions (the payload) before prose so a token-limited response
+  // truncates the message, never the file contents.
+  propertyOrdering: ['actions', 'message', 'intent', 'plan'],
 };
 
 const GEMINI_REPAIR_SCHEMA = {

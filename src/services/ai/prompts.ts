@@ -718,16 +718,28 @@ export function parseAgentResponse(raw: string): AgentActionResponse {
       }
       const allowedTypes = ['create_file', 'update_file', 'delete_file', 'rename_file', 'inspect_file', 'run_check', 'repair_error'];
       if (!allowedTypes.includes(a.type as string)) {
-        // Allow but warn - don't reject unknown types strictly
+        // Allow but warn - don't reject unknown types strictly; the normaliser
+        // maps common near-miss type names and validation has the final say.
         console.warn(`[CodeForge] Unknown action type: ${a.type}`);
       }
-      if ((a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') && typeof a.path !== 'string') {
-        throw new Error(`Action #${i} (${a.type}) missing required "path". Snippet: ${safeSnippet(JSON.stringify(a), 150)}`);
+      if (
+        (a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') &&
+        (a.path === undefined || a.path === null)
+      ) {
+        // Don't hard-throw: the normaliser may recover the path from an alias
+        // key (filePath/filename/target/...). Validation still rejects actions
+        // that end up without a usable path.
+        console.warn(`[CodeForge] Action #${i} (${a.type}) has no "path" — attempting alias recovery`);
       }
-      // content can be large HTML/CSS/JS - validate it's string if present, but NEVER check its value
-      // for file patterns like :root, doctype, function - content is SUPPOSED to be file content
-      if ((a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') && a.content !== undefined && typeof a.content !== 'string') {
-        throw new Error(`Action #${i} content must be string for ${a.type}. Got ${typeof a.content}`);
+      // content can be large HTML/CSS/JS. If present but non-string, do NOT
+      // throw — the normaliser unwraps object/array content and recovers
+      // alias keys; validation remains the final gate.
+      if (
+        (a.type === 'create_file' || a.type === 'update_file' || a.type === 'repair_error') &&
+        a.content !== undefined &&
+        typeof a.content !== 'string'
+      ) {
+        console.warn(`[CodeForge] Action #${i} content is ${typeof a.content} — normaliser will attempt recovery`);
       }
       // message is optional string
     }
