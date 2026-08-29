@@ -550,6 +550,31 @@ const gemini = {
 /* from process.env HERE and never leaves this function.              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One-shot model auto-recovery: asks the provider for its live model list
+ * and picks the best available chat model. Never sends key material
+ * anywhere but the provider itself. Returns a model id or null.
+ */
+async function recoverModel(base, headers, failedModel, config) {
+  try {
+    const res = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ids = (data.data ?? []).map((m) => m.id).filter(Boolean);
+    if (!ids.length) return null;
+    const PREFS = config.modelPrefs ?? [];
+    const pick =
+      PREFS.find((p) => ids.includes(p)) ??
+      ids.find((x) => x.includes('gpt-oss')) ??
+      ids[0];
+    if (!pick || pick === failedModel) return null;
+    console.warn(`[codeforge] ${config.id}: model '${failedModel}' unavailable — auto-recovered to '${pick}' from /models`);
+    return pick;
+  } catch {
+    return null;
+  }
+}
+
 function openAICompatibleAdapter(config) {
   return {
     id: config.id,
@@ -568,7 +593,7 @@ function openAICompatibleAdapter(config) {
         ...(config.extraHeaders ? config.extraHeaders() : {}),
       };
 
-      const res = await fetchUpstreamWithRetries(`${base}/chat/completions`, {
+      let res = await fetchUpstreamWithRetries(`${base}/chat/completions`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -587,6 +612,33 @@ function openAICompatibleAdapter(config) {
         signal,
       }, config.id);
 
+      if (!res.ok && res.status === 404 && config.modelRecovery && !model && !process.env[config.modelEnv]) {
+        // Model deprecations (Groq rotates these) — discover a live model
+        // once and retry immediately. Only when no explicit model was pinned.
+        const detail0 = await res.text().catch(() => '');
+        if (/model/i.test(detail0)) {
+          const recovered = await recoverModel(base, headers, chosen, config);
+          if (recovered) {
+            res = await fetchUpstreamWithRetries(
+              `${base}/chat/completions`,
+              {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  model: recovered,
+                  messages,
+                  temperature: temperature ?? 0.3,
+                  ...(jsonMode && config.jsonMode !== false
+                    ? { response_format: { type: 'json_object' } }
+                    : {}),
+                }),
+                signal,
+              },
+              config.id,
+            );
+          }
+        }
+      }
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
         let message = `${config.label} ${res.status}: ${detail.slice(0, 900)}`;
@@ -622,12 +674,17 @@ function openAICompatibleAdapter(config) {
 const groq = openAICompatibleAdapter({
   id: 'groq',
   label: 'Groq',
-  // Groq's currently recommended versatile coding-capable model family.
-  // Override with GROQ_MODEL when a newer model is available.
-  defaultModel: 'llama-3.3-70b-versatile',
+  // Groq deprecated its Llama chat models (incl. llama-3.3-70b-versatile);
+  // the current production recommendation is gpt-oss. Override with
+  // GROQ_MODEL at any time; see modelRecovery below for auto-healing.
+  defaultModel: 'openai/gpt-oss-120b',
   keyNames: ['GROQ_API_KEY'],
   keyHome: 'console.groq.com/keys',
   keySample: 'gsk_',
+  // Self-heal future deprecations: on 404 model_not_found, list the
+  // account's live models and retry once with the best available one.
+  modelRecovery: true,
+  modelPrefs: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'groq/compound-mini'],
   baseUrl: 'https://api.groq.com/openai/v1',
   baseUrlEnv: 'GROQ_BASE_URL',
   modelEnv: 'GROQ_MODEL',
