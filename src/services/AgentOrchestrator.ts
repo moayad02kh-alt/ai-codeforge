@@ -170,8 +170,10 @@ export class AgentOrchestrator {
 
     const aborted = () => input.signal?.aborted === true;
 
-    // Prior diagnostics boost file ranking
-    const priorDiagnostics = ErrorDetector.analyze(input.files);
+    // Live runs answer as soon as the model does; simulated runs keep the
+    // working pauses so the pipeline stays legible. Pure pacing — the same
+    // stages run either way.
+    const pace = (ms: number) => (this.provider.isLive ? Promise.resolve() : sleep(jitter(ms)));
 
     const ctx: GenerationContext = {
       prompt: input.prompt,
@@ -179,7 +181,7 @@ export class AgentOrchestrator {
       history: input.history,
       projectName: input.projectName,
       signal: input.signal,
-      diagnostics: priorDiagnostics,
+      diagnostics: [],
     };
 
     let files = input.files;
@@ -190,7 +192,7 @@ export class AgentOrchestrator {
       /* ---- 1. Understand ------------------------------------------ */
       begin('understand', `Analyzing: "${input.prompt.slice(0, 80)}${input.prompt.length > 80 ? '...' : ''}"`);
       log('understand', `Prompt received (${input.prompt.length} chars, ${input.files.length} files in context)`);
-      await sleep(jitter(180));
+      await pace(180);
       const intent = await this.provider.classifyIntent(ctx);
       if (aborted()) throw new DOMException('Aborted', 'AbortError');
       log('understand', `Intent detected: ${intent.kind} · domain: ${intent.domain}`);
@@ -250,6 +252,11 @@ export class AgentOrchestrator {
       }
 
       /* ---- 2. Inspect --------------------------------------------- */
+      // Prior diagnostics boost file ranking for coding turns. Computed here
+      // (not earlier) so conversational turns skip the file scan entirely.
+      const priorDiagnostics = ErrorDetector.analyze(input.files);
+      ctx.diagnostics = priorDiagnostics;
+
       begin('inspect', 'Scanning project files and building relevant context');
       log('inspect', `Project has ${input.files.length} file(s) total`);
       // Build context to show which files are relevant
@@ -261,7 +268,7 @@ export class AgentOrchestrator {
       });
       log('inspect', `Selected ${context.files.length} relevant file(s) for model context (~${context.estimatedTokens} tokens)`);
       for (const cf of context.files.slice(0, 10)) {
-        await sleep(jitter(60));
+        await pace(60);
         log('inspect', `· ${cf.path} (${cf.truncated ? 'truncated' : 'full'} · score ${cf.score})`);
       }
       if (context.files.length > 10) {
@@ -276,7 +283,7 @@ export class AgentOrchestrator {
           log('inspect', `  ${d.severity}: ${d.code} in ${d.file}:${d.line}`);
         }
       }
-      await sleep(jitter(200));
+      await pace(200);
       finish('inspect', 'success', `${context.files.length} files selected · ${context.estimatedTokens} tokens`);
 
       /* ---- 3. Plan ------------------------------------------------- */
@@ -286,7 +293,7 @@ export class AgentOrchestrator {
       run.plan = plan;
       log('plan', `Plan: ${plan.summary.slice(0, 140)}`);
       for (const task of plan.tasks) {
-        await sleep(jitter(80));
+        await pace(80);
         log('plan', `· ${task.title} ${task.targets.length ? `→ ${task.targets.join(', ')}` : ''}`);
       }
       bus.emit('run:plan', { runId, plan });
@@ -329,7 +336,7 @@ export class AgentOrchestrator {
 
       log('generate', `Model returned ${result.files.length} file(s), ${result.deletions.length} deletion(s)`);
       for (const f of result.files) {
-        await sleep(jitter(90));
+        await pace(90);
         const action = FileManager.find(files, f.path) ? 'update' : 'create';
         log('generate', `${action === 'create' ? '✏️ create' : '📝 update'} ${f.path}${f.rationale ? ` — ${f.rationale.slice(0, 60)}` : ''}`);
       }
@@ -357,7 +364,7 @@ export class AgentOrchestrator {
         log('apply', 'No file changes to apply');
       } else {
         for (const ch of allChanges) {
-          await sleep(jitter(70));
+          await pace(70);
           log('apply', `${ch.action === 'created' ? 'A' : ch.action === 'modified' ? 'M' : 'D'} ${ch.path} (+${ch.additions} -${ch.deletions})`);
         }
       }
@@ -404,7 +411,7 @@ export class AgentOrchestrator {
 
       /* ---- 7. Detect ------------------------------------------------ */
       begin('detect', 'Running static analysis for errors and warnings');
-      await sleep(jitter(250));
+      await pace(250);
       let diagnostics: Diagnostic[] = ErrorDetector.analyze(files);
       const errCount = ErrorDetector.errorCount(diagnostics);
       const warnCount = ErrorDetector.warningCount(diagnostics);

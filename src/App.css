@@ -4,7 +4,7 @@
   grid-template-areas:
     'topbar topbar topbar'
     'sidebar chat workspace';
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto auto minmax(0, 1fr);
   grid-template-rows: var(--topbar-h) 1fr;
   background: var(--bg-base);
   overflow: hidden;
@@ -114,7 +114,7 @@
     grid-template-areas:
       'topbar topbar'
       'chat workspace';
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
   }
 }
 
@@ -129,7 +129,7 @@
       'topbar'
       'workspace'
       'mobilenav';
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: var(--topbar-h) minmax(0, 1fr) auto;
     padding-bottom: 0;
   }

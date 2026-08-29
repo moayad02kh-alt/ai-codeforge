@@ -170,7 +170,13 @@
 .chat__scroll {
   flex: 1;
   overflow-y: auto;
-  min-height: 0;
+  /* The conversation scrolls vertically, never sideways: combined with the
+     wrap rules on .msg__bubble this keeps every message inside the viewport
+     on mobile (the overflow-x default here would otherwise compute to auto
+     and let wide content open a horizontal scroll). Content is wrapped, so
+     nothing readable is clipped. */
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 /* ---------------- Empty state ---------------- */
@@ -245,11 +251,15 @@
   flex-direction: column;
   gap: 16px;
   padding: 16px 14px 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .msg {
   display: flex;
   gap: 8px;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
 }
@@ -332,6 +342,8 @@
 /* ---------------- Run details disclosure ---------------- */
 
 .chat__timeline {
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
