@@ -251,6 +251,10 @@
   color: var(--text);
 }
 
+.topbar__menu-item.is-active {
+  color: var(--brand-hi);
+}
+
 .topbar__menu-item span {
   flex: 1;
 }

@@ -49,3 +49,16 @@
   .mode-switcher__label { display: none; }
   .mode-switcher__btn { padding: 5px 8px; }
 }
+
+/*
+ * On phones the bar cannot fit all five mode buttons without clipping the
+ * right side. Agent · Build App · Chat AI stay inline; Image/Video remain
+ * fully functional via the top bar's overflow menu (TopBar.tsx), which also
+ * shows which of the two is active.
+ */
+@media (max-width: 860px) {
+  .mode-switcher__btn:nth-child(4),
+  .mode-switcher__btn:nth-child(5) {
+    display: none;
+  }
+}

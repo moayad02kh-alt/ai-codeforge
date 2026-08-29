@@ -5,6 +5,8 @@ import {
   IconBolt,
   IconChevron,
   IconEye,
+  IconFilm,
+  IconImage,
   IconMenu,
   IconPlay,
   IconSave,
@@ -13,6 +15,7 @@ import {
   IconStop,
 } from './Icons';
 import { ModeSwitcher } from './ModeSwitcher';
+import { useModeStore } from '../state/modeStore';
 import './TopBar.css';
 
 export function TopBar() {
@@ -67,6 +70,8 @@ export function TopBar() {
   };
 
   const { isLive: live, label: providerLabel } = useProvider();
+  const mode = useModeStore((s) => s.mode);
+  const setMode = useModeStore((s) => s.setMode);
 
   return (
     <header className="topbar">
@@ -182,6 +187,31 @@ export function TopBar() {
               >
                 <IconEye size={14} />
                 <span>Open preview</span>
+              </button>
+              {/* On phones the Image/Video switcher buttons are folded into
+                  this menu so every mode stays reachable without overflowing
+                  the top bar (Agent · Build App · Chat AI stay inline). */}
+              <button
+                className={`topbar__menu-item ${mode === 'image' ? 'is-active' : ''}`}
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setMode('image');
+                }}
+              >
+                <IconImage size={14} />
+                <span>Image mode</span>
+              </button>
+              <button
+                className={`topbar__menu-item ${mode === 'video' ? 'is-active' : ''}`}
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setMode('video');
+                }}
+              >
+                <IconFilm size={14} />
+                <span>Video mode</span>
               </button>
               <button
                 className="topbar__menu-item"
