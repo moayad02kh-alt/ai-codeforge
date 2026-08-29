@@ -182,71 +182,95 @@ export class LLMProvider implements AIProvider {
       });
     };
 
-    let res: Response;
-    try {
-      res = await makeRequest();
-    } catch (err) {
-      if ((err as Error)?.name === 'AbortError') throw err;
-      if (this.isNetworkError(err)) {
-        throw Object.assign(
-          new Error(
-            `Cannot reach AI backend at ${this.baseUrl}/${route} — the server may be down, restarting, or blocked by network/CORS. ` +
-              `If you're on Render, wait 20-30s for the service to wake up and try again. The app will continue in simulated mode if the backend stays unreachable. ` +
-              `Original: ${(err as Error).message}`,
-          ),
-          { code: 'NETWORK_ERROR', cause: err },
-        );
-      }
-      throw err;
-    }
+    // Transient upstream statuses (Gemini "high demand" 503 etc.). The server
+    // already retries these internally; this single client-side retry covers
+    // the case where server-side retries were exhausted during a sustained
+    // upstream spike. 429 is excluded — the server honours Retry-After and
+    // our own rate limiter needs the minute window to elapse anyway.
+    const TRANSIENT_UPSTREAM = new Set([500, 502, 503, 504]);
 
-    let data: ChatResponse & { error?: string; code?: string; hint?: string };
-    try {
-      data = (await res.json()) as typeof data;
-    } catch {
-      data = {} as typeof data;
-    }
+    for (let attempt = 1; ; attempt += 1) {
+      let res: Response;
+      try {
+        res = await makeRequest();
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') throw err;
+        if (this.isNetworkError(err)) {
+          throw Object.assign(
+            new Error(
+              `Cannot reach AI backend at ${this.baseUrl}/${route} — the server may be down, restarting, or blocked by network/CORS. ` +
+                `If you're on Render, wait 20-30s for the service to wake up and try again. The app will continue in simulated mode if the backend stays unreachable. ` +
+                `Original: ${(err as Error).message}`,
+            ),
+            { code: 'NETWORK_ERROR', cause: err },
+          );
+        }
+        throw err;
+      }
 
-    if (!res.ok) {
-      const code = (data as { code?: string })?.code ?? '';
-      // Provider not configured -> clear message so orchestrator can fallback or show hint
-      if (res.status === 503 || code === 'PROVIDER_NOT_CONFIGURED') {
-        throw Object.assign(
-          new Error(
-            data.error ||
-              'No AI provider is configured on the server. The app is running in simulated mode. Set an API key in .env (or Render env vars) to enable live mode.',
-          ),
-          { code: 'PROVIDER_NOT_CONFIGURED', status: 503 },
-        );
+      let data: ChatResponse & { error?: string; code?: string; hint?: string };
+      try {
+        data = (await res.json()) as typeof data;
+      } catch {
+        data = {} as typeof data;
       }
-      if (res.status === 429 || code === 'RATE_LIMITED') {
-        throw Object.assign(
-          new Error(
-            data.error || 'Too many requests — the AI backend is rate-limited. Please wait a minute and try again.',
-          ),
-          { code: 'RATE_LIMITED', status: 429 },
-        );
+
+      if (!res.ok) {
+        const code = (data as { code?: string })?.code ?? '';
+        // A transient upstream failure (the vendor, not our backend — the
+        // server marks those with UPSTREAM_ERROR/UPSTREAM_TIMEOUT codes).
+        // Retry ONCE so a temporary Gemini 503 "high demand" spike doesn't
+        // kill the whole agent run.
+        const isUpstream = code === 'UPSTREAM_ERROR' || code === 'UPSTREAM_TIMEOUT' || code.startsWith('HTTP_5');
+        const isTransient = TRANSIENT_UPSTREAM.has(res.status) && isUpstream;
+        if (isTransient && attempt === 1 && !signal?.aborted) {
+          console.warn(`[CodeForge] Upstream ${res.status} (${code}) — retrying once in 1.2s`);
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        // Provider not configured -> clear message so orchestrator can fallback or show hint.
+        // IMPORTANT: only when the server explicitly says so (or gives no code at all) —
+        // an upstream Gemini 503 arrives with code UPSTREAM_ERROR and must NOT be
+        // misreported as "no provider configured / simulated mode".
+        const isNotConfigured = code === 'PROVIDER_NOT_CONFIGURED' || (res.status === 503 && !code);
+        if (isNotConfigured) {
+          throw Object.assign(
+            new Error(
+              data.error ||
+                'No AI provider is configured on the server. The app is running in simulated mode. Set an API key in .env (or Render env vars) to enable live mode.',
+            ),
+            { code: 'PROVIDER_NOT_CONFIGURED', status: 503 },
+          );
+        }
+        if (res.status === 429 || code === 'RATE_LIMITED') {
+          throw Object.assign(
+            new Error(
+              data.error || 'Too many requests — the AI backend is rate-limited. Please wait a minute and try again.',
+            ),
+            { code: 'RATE_LIMITED', status: 429 },
+          );
+        }
+        if (res.status === 504 || code === 'UPSTREAM_TIMEOUT') {
+          throw Object.assign(
+            new Error(
+              data.error ||
+                'The AI model took too long to respond and the request timed out. Please try again with a shorter prompt or try again in a moment.',
+            ),
+            { code: 'UPSTREAM_TIMEOUT', status: 504 },
+          );
+        }
+        throw Object.assign(new Error(data.error || `Backend returned ${res.status}: ${res.statusText}`), {
+          code: code || `HTTP_${res.status}`,
+          status: res.status,
+        });
       }
-      if (res.status === 504 || code === 'UPSTREAM_TIMEOUT') {
-        throw Object.assign(
-          new Error(
-            data.error ||
-              'The AI model took too long to respond and the request timed out. Please try again with a shorter prompt or try again in a moment.',
-          ),
-          { code: 'UPSTREAM_TIMEOUT', status: 504 },
-        );
+      if (!data.text) {
+        throw Object.assign(new Error('Model returned an empty response — please try again.'), {
+          code: 'EMPTY_RESPONSE',
+        });
       }
-      throw Object.assign(new Error(data.error || `Backend returned ${res.status}: ${res.statusText}`), {
-        code: code || `HTTP_${res.status}`,
-        status: res.status,
-      });
+      return data;
     }
-    if (!data.text) {
-      throw Object.assign(new Error('Model returned an empty response — please try again.'), {
-        code: 'EMPTY_RESPONSE',
-      });
-    }
-    return data;
   }
 
   /* ---------------- the single real request ---------------- */

@@ -65,6 +65,100 @@ function firstPresentEnv(names) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Transient upstream failure retry                                    */
+/*                                                                    */
+/* Gemini (and other vendors) intermittently return 429/5xx — most    */
+/* commonly 503 UNAVAILABLE "This model is currently experiencing    */
+/* high demand". These are temporary: retrying a few times with      */
+/* backoff rescues the run. Retries happen HERE, server-side, so the */
+/* API key never leaves the function and every client benefits.      */
+/*                                                                    */
+/* Budgets are env-tunable and deliberately bounded so that the      */
+/* worst case stays inside the Vercel function limit (maxDuration    */
+/* 60): a retry is only started when the time budget still allows    */
+/* it, and vendor Retry-After hints are honoured (capped).           */
+/* ------------------------------------------------------------------ */
+
+const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function isTransientUpstream(status) {
+  return TRANSIENT_STATUSES.has(status);
+}
+
+function sleepWithAbort(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+      },
+      { once: true },
+    );
+  });
+}
+
+/**
+ * fetch() with bounded retries on transient upstream statuses.
+ * Same contract as fetch — returns the final Response (whatever it is),
+ * so callers keep their existing error handling unchanged.
+ */
+async function fetchUpstreamWithRetries(url, init, label) {
+  const maxRetries = Number(process.env.UPSTREAM_MAX_RETRIES ?? 2);
+  const baseDelayMs = Number(process.env.UPSTREAM_RETRY_BASE_MS ?? 800);
+  const budgetMs = Number(process.env.UPSTREAM_RETRY_BUDGET_MS ?? 40_000);
+  const started = Date.now();
+
+  for (let attempt = 1; ; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(url, init);
+    } catch (err) {
+      // Network-level failure (not an HTTP status). Retry only while the
+      // request was not aborted and the budget still allows it.
+      if (init?.signal?.aborted || attempt > maxRetries || Date.now() - started > budgetMs) {
+        throw err;
+      }
+      const delay = Math.min(baseDelayMs * 2 ** (attempt - 1), 8000);
+      console.warn(`[codeforge] ${label} network error (attempt ${attempt}) — retrying in ${delay}ms`);
+      await sleepWithAbort(delay, init?.signal);
+      continue;
+    }
+
+    const transient = isTransientUpstream(res.status);
+    const outOfRetries = attempt > maxRetries;
+    const outOfBudget = Date.now() - started > budgetMs;
+
+    if (!transient || outOfRetries || outOfBudget) {
+      if (transient && !outOfRetries && outOfBudget) {
+        console.warn(`[codeforge] ${label} ${res.status} is transient but retry budget (${budgetMs}ms) is exhausted — returning as-is`);
+      }
+      return res;
+    }
+
+    // Honour vendor Retry-After when present, otherwise exponential backoff.
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const delay = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 8000)
+      : Math.min(baseDelayMs * 2 ** (attempt - 1), 8000);
+
+    console.warn(
+      `[codeforge] ${label} ${res.status} (transient, attempt ${attempt}/${maxRetries + 1}) — retrying in ${Math.round(delay)}ms`,
+    );
+    // Drain the body so the socket is released before backing off.
+    try {
+      await res.text();
+    } catch {}
+    await sleepWithAbort(delay, init?.signal);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* OpenAI (also covers Azure OpenAI + any OpenAI-compatible endpoint)  */
 /* ------------------------------------------------------------------ */
 
@@ -78,7 +172,7 @@ const openai = {
   async chat({ messages, model, temperature, jsonMode, signal }) {
     const base = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 
-    const res = await fetch(`${base}/chat/completions`, {
+    const res = await fetchUpstreamWithRetries(`${base}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -91,7 +185,7 @@ const openai = {
         ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal,
-    });
+    }, 'openai');
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
@@ -132,7 +226,7 @@ const anthropic = {
       .filter((m) => m.role !== 'system')
       .map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
 
-    const res = await fetch(`${base}/messages`, {
+    const res = await fetchUpstreamWithRetries(`${base}/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -147,7 +241,7 @@ const anthropic = {
         messages: rest.length ? rest : [{ role: 'user', content: 'Continue.' }],
       }),
       signal,
-    });
+    }, 'anthropic');
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
@@ -314,7 +408,7 @@ const gemini = {
     //   and AQ. keys (and any recognised alias) are accepted.
     const apiKey = readEnvSecret(...GEMINI_KEY_NAMES);
 
-    const res = await fetch(`${base}/models/${encodeURIComponent(chosen)}:generateContent`, {
+    const res = await fetchUpstreamWithRetries(`${base}/models/${encodeURIComponent(chosen)}:generateContent`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -337,7 +431,7 @@ const gemini = {
         },
       }),
       signal,
-    });
+    }, `gemini:${chosen}`);
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
