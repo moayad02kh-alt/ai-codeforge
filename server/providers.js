@@ -456,7 +456,14 @@ const gemini = {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw Object.assign(new Error(`Gemini ${res.status}: ${detail.slice(0, 900)}`), {
+      let message = `Gemini ${res.status}: ${detail.slice(0, 900)}`;
+      if (res.status === 401 || res.status === 403) {
+        message =
+          `Gemini rejected the API key (HTTP ${res.status}). Check GEMINI_API_KEY in the ` +
+          `server environment: it must be a valid, active key from Google AI Studio ` +
+          `(starts with 'AIza' or 'AQ.'), pasted without quotes, then redeploy.`;
+      }
+      throw Object.assign(new Error(message), {
         status: res.status,
       });
     }
@@ -582,7 +589,19 @@ function openAICompatibleAdapter(config) {
 
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
-        throw Object.assign(new Error(`${config.label} ${res.status}: ${detail.slice(0, 900)}`), {
+        let message = `${config.label} ${res.status}: ${detail.slice(0, 900)}`;
+        // Auth failures are almost always a wrong/revoked value in the env
+        // var (or a key pasted into the wrong provider's variable). Make the
+        // error self-diagnosing instead of a bare 401.
+        if (res.status === 401 || res.status === 403) {
+          const envName = config.keyNames[0];
+          message =
+            `${config.label} rejected the API key (HTTP ${res.status}). ` +
+            `Check ${envName} in the server environment: it must be a valid, active key ` +
+            `from ${config.keyHome ?? 'the provider console'} (for ${config.label} it starts ` +
+            `with '${config.keySample ?? 'sk-'}'), pasted without quotes, then redeploy.`;
+        }
+        throw Object.assign(new Error(message), {
           status: res.status,
         });
       }
@@ -607,6 +626,8 @@ const groq = openAICompatibleAdapter({
   // Override with GROQ_MODEL when a newer model is available.
   defaultModel: 'llama-3.3-70b-versatile',
   keyNames: ['GROQ_API_KEY'],
+  keyHome: 'console.groq.com/keys',
+  keySample: 'gsk_',
   baseUrl: 'https://api.groq.com/openai/v1',
   baseUrlEnv: 'GROQ_BASE_URL',
   modelEnv: 'GROQ_MODEL',
@@ -619,6 +640,8 @@ const openrouter = openAICompatibleAdapter({
   // override with OPENROUTER_MODEL to pin another free model.
   defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
   keyNames: ['OPENROUTER_API_KEY'],
+  keyHome: 'openrouter.ai/settings/keys',
+  keySample: 'sk-or-',
   baseUrl: 'https://openrouter.ai/api/v1',
   baseUrlEnv: 'OPENROUTER_BASE_URL',
   modelEnv: 'OPENROUTER_MODEL',
@@ -681,5 +704,12 @@ export function providerStatus() {
     // vs GOOGLE_API_KEY) without exposing credentials.
     keyNames: p.keyNames ?? [`${p.id.toUpperCase()}_API_KEY`],
     keyEnv: p.keyNames ? firstPresentEnv(p.keyNames) : null,
+    // Non-secret fingerprint: first 4 chars of the detected key (e.g. 'gsk_',
+    // 'AIza', 'AQ.'). Enough to spot a key pasted into the wrong provider's
+    // variable — never enough to reconstruct the secret.
+    keyPrefix: (() => {
+      const v = readEnvSecret(...(p.keyNames ?? [`${p.id.toUpperCase()}_API_KEY`]));
+      return v ? v.slice(0, 4) : null;
+    })(),
   }));
 }
