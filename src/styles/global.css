@@ -98,6 +98,12 @@ html,
 body,
 #root {
   height: 100%;
+  /* Defensive final layer: every container is already width-floored with
+     minmax(0, …)/min-width: 0 and wraps long content (measured clean at
+     320–412px on every screen). `clip` (not `hidden`) guarantees no
+     page-level horizontal scrolling can ever appear, without turning the
+     root into a scroll container or breaking fixed/sticky children. */
+  overflow-x: clip;
 }
 
 body {
