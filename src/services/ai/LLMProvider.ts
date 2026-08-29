@@ -47,13 +47,21 @@ export interface LLMProviderOptions {
   /** Overrides the server's default model. */
   model?: string;
   temperature?: number;
-  /** Forces a specific server-side vendor. */
-  provider?: 'openai' | 'anthropic' | 'gemini';
+  /**
+   * Preferred server-side vendor. The server treats this as the HEAD of its
+   * fallback chain (Gemini → Groq → OpenRouter Free → other configured),
+   * NOT as a hard pin — on transient failure it fails over automatically.
+   */
+  provider?: 'openai' | 'anthropic' | 'gemini' | 'groq' | 'openrouter';
   /** Extra headers, e.g. a session token from your auth system. */
   headers?: Record<string, string>;
   /** Max inspect_file round-trips before giving up. */
   maxInspectionRounds?: number;
   label?: string;
+  /** Client-side retry delay after a transient 5xx (default 1200ms). */
+  retryDelay5xxMs?: number;
+  /** Client-side retry delay after vendor 429 / all-providers-failed (default 15000ms). */
+  retryDelay429Ms?: number;
 }
 
 export interface BackendStatus {
@@ -61,13 +69,33 @@ export interface BackendStatus {
   activeProvider: string | null;
   activeModel: string | null;
   providers: Array<{ id: string; label: string; configured: boolean; defaultModel: string }>;
+  /** Ordered failover chain of configured providers (ids only). */
+  chain?: string[];
 }
+
+/** One failed provider attempt reported by the server's failover chain. */
+export interface ProviderFailoverAttempt {
+  provider: string;
+  status: number;
+  error: string;
+}
+
+/** Human-readable provider names for failover notices in the UI. */
+export const PROVIDER_LABELS: Record<string, string> = {
+  gemini: 'Gemini',
+  groq: 'Groq',
+  openrouter: 'OpenRouter Free',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
 
 interface ChatResponse {
   text: string;
   usage?: { promptTokens: number; completionTokens: number };
   model?: string;
   provider?: string;
+  /** Present when the server had to fall back from earlier providers. */
+  failover?: ProviderFailoverAttempt[];
 }
 
 /**
@@ -86,6 +114,10 @@ interface RunCache {
   error?: Error;
   /** Notes from action normalisation (recovered/converted actions). */
   notes?: string[];
+  /** Provider that actually served the request (after any failover). */
+  usedProvider?: string;
+  /** Failed provider attempts the server reported before succeeding. */
+  failover?: ProviderFailoverAttempt[];
 }
 
 export class LLMProvider implements AIProvider {
@@ -221,15 +253,24 @@ export class LLMProvider implements AIProvider {
         const code = (data as { code?: string })?.code ?? '';
         // A transient upstream failure (the vendor, not our backend — the
         // server marks those with UPSTREAM_ERROR/UPSTREAM_TIMEOUT codes).
-        // Retry ONCE so a temporary Gemini 503 "high demand" spike doesn't
-        // kill the whole agent run.
-        const isUpstream = code === 'UPSTREAM_ERROR' || code === 'UPSTREAM_TIMEOUT' || code.startsWith('HTTP_5');
+        // ALL_PROVIDERS_FAILED means the server's whole fallback chain
+        // (Gemini → Groq → OpenRouter Free → …) was exhausted — usually a
+        // broad outage or a quota window; ONE delayed retry is still bounded
+        // and often lands in a fresh per-minute quota window.
+        const isUpstream =
+          code === 'UPSTREAM_ERROR' ||
+          code === 'UPSTREAM_TIMEOUT' ||
+          code === 'ALL_PROVIDERS_FAILED' ||
+          code.startsWith('HTTP_5');
         const isTransient = TRANSIENT_UPSTREAM.has(res.status) && isUpstream;
         if (isTransient && attempt === 1 && !signal?.aborted) {
           // Vendor quota 429 (UPSTREAM_ERROR): the per-minute window resets
           // on its own — wait long enough to actually clear it. 5xx overload
           // spikes recover in seconds, so a short delay suffices there.
-          const delay = res.status === 429 ? 15_000 : 1_200;
+          const slowRetry = res.status === 429 || code === 'ALL_PROVIDERS_FAILED';
+          const delay = slowRetry
+            ? (this.options.retryDelay429Ms ?? 15_000)
+            : (this.options.retryDelay5xxMs ?? 1_200);
           console.warn(`[CodeForge] Upstream ${res.status} (${code}) — retrying once in ${Math.round(delay / 1000)}s`);
           await new Promise((r) => setTimeout(r, delay));
           continue;
@@ -321,6 +362,8 @@ export class LLMProvider implements AIProvider {
         }
 
         const response = await this.chat('generate', messages, ctx.signal);
+        cache.usedProvider = response.provider;
+        cache.failover = response.failover;
         let parsed;
         try {
           parsed = parseAgentResponse(response.text);
@@ -419,7 +462,7 @@ export class LLMProvider implements AIProvider {
 
         cache.intent = this.toIntent(parsed.intent, ctx);
         cache.plan = this.toPlan(parsed.plan, cache.intent, valid);
-        cache.result = this.toResult(files, valid, rejected, parsed.message, response, allNotes);
+        cache.result = this.toResult(files, valid, rejected, parsed.message, response, allNotes, cache.failover, cache.usedProvider);
         return cache;
       }
     } catch (err) {
@@ -604,6 +647,8 @@ export class LLMProvider implements AIProvider {
     message: string,
     response: ChatResponse,
     notes: string[] = [],
+    failover: ProviderFailoverAttempt[] = [],
+    usedProvider?: string,
   ): GenerationResult {
     const exec = ActionExecutor.execute(files, actions);
 
@@ -623,6 +668,17 @@ export class LLMProvider implements AIProvider {
     const deletions = [...before.keys()].filter((p) => !after.has(p));
 
     let finalMessage = message;
+
+    // Failover notice — the UI requirement: "Gemini unavailable — using
+    // Groq" / "Groq unavailable — using OpenRouter Free". One line per
+    // failed provider, naming the provider that took over.
+    if (failover.length) {
+      const lines = failover.map((a, i) => {
+        const next = failover[i + 1]?.provider ?? usedProvider ?? 'a fallback provider';
+        return `> ⚠️ ${PROVIDER_LABELS[a.provider] ?? a.provider} unavailable — using ${PROVIDER_LABELS[next] ?? next}`;
+      });
+      finalMessage = lines.join('\n') + '\n\n' + finalMessage;
+    }
 
     if (notes.length) {
       finalMessage += `\n\n> 🛠️ ${notes.length} action(s) needed automatic repair before applying:\n${notes

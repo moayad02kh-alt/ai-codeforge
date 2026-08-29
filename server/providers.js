@@ -503,10 +503,127 @@ const gemini = {
 };
 
 /* ------------------------------------------------------------------ */
+/* OpenAI-compatible factory (used by Groq + OpenRouter)               */
+/*                                                                    */
+/* Both fallback providers speak the OpenAI chat-completions wire      */
+/* format, so they share one adapter implementation. Each keeps its    */
+/* own id, label, default model and key env var. The API key is read   */
+/* from process.env HERE and never leaves this function.              */
+/* ------------------------------------------------------------------ */
+
+function openAICompatibleAdapter(config) {
+  return {
+    id: config.id,
+    label: config.label,
+    defaultModel: config.defaultModel,
+    keyNames: config.keyNames,
+    isConfigured: () => Boolean(readEnvSecret(...config.keyNames)),
+
+    async chat({ messages, model, temperature, jsonMode, signal }) {
+      const base = process.env[config.baseUrlEnv] || config.baseUrl;
+      const chosen = model || process.env[config.modelEnv] || config.defaultModel;
+
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${readEnvSecret(...config.keyNames)}`,
+        ...(config.extraHeaders ? config.extraHeaders() : {}),
+      };
+
+      const res = await fetchUpstreamWithRetries(`${base}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: chosen,
+          messages,
+          temperature: temperature ?? 0.3,
+          // json_object mode: Groq documents support for Llama 3.x models.
+          // OpenRouter free models vary — some reject the field — so the
+          // adapter only sends it when explicitly enabled via env. The
+          // system prompt already demands raw JSON and the shared parser
+          // tolerates fences, so omitting it is safe.
+          ...(jsonMode && config.jsonMode !== false
+            ? { response_format: { type: 'json_object' } }
+            : {}),
+        }),
+        signal,
+      }, config.id);
+
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        throw Object.assign(new Error(`${config.label} ${res.status}: ${detail.slice(0, 900)}`), {
+          status: res.status,
+        });
+      }
+
+      const data = await res.json();
+      return {
+        text: data.choices?.[0]?.message?.content ?? '',
+        usage: {
+          promptTokens: data.usage?.prompt_tokens ?? 0,
+          completionTokens: data.usage?.completion_tokens ?? 0,
+        },
+        model: data.model ?? chosen,
+      };
+    },
+  };
+}
+
+const groq = openAICompatibleAdapter({
+  id: 'groq',
+  label: 'Groq',
+  // Groq's currently recommended versatile coding-capable model family.
+  // Override with GROQ_MODEL when a newer model is available.
+  defaultModel: 'llama-3.3-70b-versatile',
+  keyNames: ['GROQ_API_KEY'],
+  baseUrl: 'https://api.groq.com/openai/v1',
+  baseUrlEnv: 'GROQ_BASE_URL',
+  modelEnv: 'GROQ_MODEL',
+});
+
+const openrouter = openAICompatibleAdapter({
+  id: 'openrouter',
+  label: 'OpenRouter Free',
+  // Free-tier routed model (":free" suffix). Used only as a fallback tier —
+  // override with OPENROUTER_MODEL to pin another free model.
+  defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
+  keyNames: ['OPENROUTER_API_KEY'],
+  baseUrl: 'https://openrouter.ai/api/v1',
+  baseUrlEnv: 'OPENROUTER_BASE_URL',
+  modelEnv: 'OPENROUTER_MODEL',
+  jsonMode: false,
+  // OpenRouter asks for these to identify the app; both are non-secret.
+  extraHeaders: () => ({
+    'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'https://codeforge.app',
+    'X-Title': process.env.OPENROUTER_APP_NAME || 'CodeForge AI',
+  }),
+});
+
+/* ------------------------------------------------------------------ */
 /* Registry                                                            */
 /* ------------------------------------------------------------------ */
 
-export const PROVIDERS = { openai, anthropic, gemini };
+export const PROVIDERS = { openai, anthropic, gemini, groq, openrouter };
+
+/**
+ * Ordered fallback chain of CONFIGURED providers.
+ *
+ * Order: the preferred provider (explicit request or AI_PROVIDER) first,
+ * then the product default Gemini → Groq → OpenRouter Free, then the other
+ * legacy providers (OpenAI, Anthropic) as a last resort. Unconfigured
+ * providers are skipped. Bounded by definition — at most one attempt per
+ * configured provider, driven by the caller in server/index.js.
+ */
+export function providerChain(preferred) {
+  const wanted = preferred || process.env.AI_PROVIDER;
+  const order = [gemini, groq, openrouter, openai, anthropic];
+  const chain = [];
+  const push = (p) => {
+    if (p && p.isConfigured() && !chain.includes(p)) chain.push(p);
+  };
+  if (wanted && PROVIDERS[wanted]) push(PROVIDERS[wanted]);
+  for (const p of order) push(p);
+  return chain;
+}
 
 /**
  * Resolves the active provider.

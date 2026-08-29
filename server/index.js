@@ -26,7 +26,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { providerStatus, resolveProvider } from './providers.js';
+import { providerStatus, resolveProvider, providerChain } from './providers.js';
 import { hasBuild, serveStatic } from './static.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -158,6 +158,9 @@ async function handleStatus(res) {
       ? process.env[`${active.id.toUpperCase()}_MODEL`] || active.defaultModel
       : null,
     providers: providerStatus(),
+    // Ordered failover chain (ids only): Gemini -> Groq -> OpenRouter Free,
+    // filtered to configured providers. Lets the UI explain fallbacks.
+    chain: providerChain().map((p) => p.id),
   });
 }
 
@@ -169,42 +172,85 @@ async function handleChat(req, res, { jsonMode }) {
     return send(res, 400, { error: 'Body must include a non-empty "messages" array' });
   }
 
-  const provider = resolveProvider(body.provider);
-  if (!provider) {
+  // Ordered failover chain of CONFIGURED providers (bounded: at most one
+  // round of attempts): preferred provider (explicit request or AI_PROVIDER)
+  // first, then the product default Gemini → Groq → OpenRouter Free, then
+  // any other configured provider as a last resort.
+  const chain = providerChain(body.provider);
+  if (!chain.length) {
     return send(res, 503, {
       error: 'No AI provider is configured on the server.',
-      hint: 'Copy .env.example to .env and set an API key, then restart the server.',
+      hint: 'Set GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY (or another provider key) and redeploy.',
       code: 'PROVIDER_NOT_CONFIGURED',
     });
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // Wall-clock budget for the WHOLE chain so the worst case (every provider
+  // failing) still answers well inside the 60s function limit.
+  const chainDeadline = Date.now() + Number(process.env.PROVIDER_CHAIN_BUDGET_MS || 50_000);
+  const attempts = [];
 
   try {
     const started = Date.now();
-    const result = await provider.chat({
-      messages,
-      model,
-      temperature,
-      jsonMode,
-      signal: controller.signal,
-    });
+    for (const provider of chain) {
+      if (controller.signal.aborted) break;
+      // Never start a provider attempt without a realistic time budget.
+      if (attempts.length > 0 && Date.now() > chainDeadline) {
+        console.warn('[codeforge] provider chain budget exhausted — stopping failover');
+        break;
+      }
 
-    send(res, 200, {
-      text: result.text,
-      usage: result.usage,
-      model: result.model,
-      provider: provider.id,
-      durationMs: Date.now() - started,
+      try {
+        const result = await provider.chat({
+          messages,
+          // A client/model preference is only meaningful for the preferred
+          // provider — fallbacks use their own configured default models.
+          model: provider === chain[0] ? model : undefined,
+          temperature,
+          jsonMode,
+          signal: controller.signal,
+        });
+
+        if (attempts.length) result.failover = attempts;
+        send(res, 200, {
+          text: result.text,
+          usage: result.usage,
+          model: result.model,
+          provider: provider.id,
+          failover: result.failover,
+          durationMs: Date.now() - started,
+        });
+        return;
+      } catch (err) {
+        // A client abort is not a provider failure — stop immediately.
+        if (err?.name === 'AbortError') throw err;
+        attempts.push({ provider: provider.id, status: err?.status ?? 0, error: safeErrorMessage(err) });
+        console.error(
+          `[codeforge] ${provider.id} failed (failover ${attempts.length}/${chain.length}):`,
+          safeErrorMessage(err),
+        );
+      }
+    }
+
+    // Every configured provider failed — one clear, honest error.
+    const summary = attempts.map((a) => `${a.provider} (${a.status})`).join(', ');
+    const lastError = attempts[attempts.length - 1]?.error ?? 'unknown error';
+    send(res, 502, {
+      error:
+        `All configured AI providers are temporarily unavailable. ` +
+        `Tried: ${summary || 'none'}. Last error: ${lastError}`,
+      code: 'ALL_PROVIDERS_FAILED',
+      attempts,
     });
   } catch (err) {
     const status = err?.name === 'AbortError' ? 504 : (err?.status ?? 502);
-    console.error(`[codeforge] ${provider.id} request failed:`, safeErrorMessage(err));
+    console.error(`[codeforge] provider chain aborted:`, safeErrorMessage(err));
     send(res, status, {
       error: safeErrorMessage(err),
-      provider: provider.id,
       code: err?.name === 'AbortError' ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_ERROR',
+      attempts,
     });
   } finally {
     clearTimeout(timeout);
