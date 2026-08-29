@@ -56,6 +56,41 @@ export interface OrchestratorOutput {
   previewHtml: string;
 }
 
+/**
+ * Convert any thrown value into human-readable display text.
+ * UI-serialization only: digs Error instances, `message` / `error` /
+ * `detail(s)` fields and nested payloads for the most relevant message.
+ * Never alters control flow, retries, or error handling.
+ */
+function toErrorMessage(err: unknown): string {
+  const DIG_KEYS = ['message', 'error', 'detail', 'details'] as const;
+  const dig = (o: unknown, depth = 0): string => {
+    if (o == null || depth > 3) return '';
+    if (typeof o === 'string') {
+      const s = o.trim();
+      return s && s !== '[object Object]' ? s : '';
+    }
+    if (o instanceof Error) {
+      const m = o.message?.trim();
+      if (m && m !== '[object Object]') return m;
+      return dig((o as Error & { cause?: unknown }).cause, depth + 1);
+    }
+    if (typeof o === 'object') {
+      for (const key of DIG_KEYS) {
+        const found = dig((o as Record<string, unknown>)[key], depth + 1);
+        if (found) return found;
+      }
+    }
+    return '';
+  };
+  const msg = dig(err);
+  return msg
+    ? msg.length > 300
+      ? `${msg.slice(0, 300)}…`
+      : msg
+    : 'Unknown error — see the run details below for the full log.';
+}
+
 const STEP_BLUEPRINT: Array<{ phase: AgentPhase; title: string; description: string }> = [
   { phase: 'understand', title: 'Understanding the request', description: 'Parsing your prompt and detecting intent' },
   { phase: 'inspect', title: 'Inspecting relevant files', description: 'Scanning project context and selecting relevant files' },
@@ -513,9 +548,9 @@ export class AgentOrchestrator {
       if (active) {
         active.status = isAbort ? 'skipped' : 'failed';
         active.finishedAt = now();
-        active.detail = isAbort ? 'Cancelled by user' : (err as Error).message.slice(0, 200);
+        active.detail = isAbort ? 'Cancelled by user' : toErrorMessage(err).slice(0, 200);
         // Add error log to active step
-        active.logs.push(`✗ Failed: ${(err as Error).message}`);
+        active.logs.push(`✗ Failed: ${toErrorMessage(err)}`);
         bus.emit('run:step', { runId, step: { ...active, logs: [...active.logs] } });
       }
       // Mark remaining pending steps as skipped if abort, or keep pending
@@ -535,7 +570,7 @@ export class AgentOrchestrator {
         entry: {
           id: uid('log'),
           level: 'error',
-          message: isAbort ? 'Run cancelled by user' : `Run failed: ${(err as Error).message}`,
+          message: isAbort ? 'Run cancelled by user' : `Run failed: ${toErrorMessage(err)}`,
           at: now(),
           source: 'agent',
         },
@@ -546,7 +581,7 @@ export class AgentOrchestrator {
         files,
         message: isAbort
           ? 'Run cancelled. Any files already written have been kept — use Version History to roll back.'
-          : `The run failed: ${(err as Error).message}\n\n` +
+          : `The run failed: ${toErrorMessage(err)}\n\n` +
             `**What to do:**\n` +
             `- If you saw "Failed to fetch" or "Cannot reach AI backend", the server may be waking up (Render cold start takes 20-30s). Wait and try again.\n` +
             `- If you're in simulated mode, try a more specific prompt.\n` +

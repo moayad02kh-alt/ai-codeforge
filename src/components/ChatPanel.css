@@ -251,6 +251,7 @@
   display: flex;
   gap: 8px;
   max-width: 100%;
+  min-width: 0;
 }
 
 .msg--user {
@@ -282,7 +283,14 @@
   border-radius: var(--r-lg);
   font-size: 13px;
   line-height: 1.6;
-  overflow-wrap: break-word;
+  /* `anywhere` (unlike `break-word`) also shrinks the bubble's intrinsic
+     min-content width inside flex, so long URLs / code tokens / unbroken
+     Arabic-English mixed strings wrap instead of pushing past the viewport. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  /* Derive per-paragraph direction from content: Arabic renders RTL-correct,
+     English LTR, without flipping the UI itself. */
+  unicode-bidi: plaintext;
 }
 
 .msg--user .msg__bubble {
@@ -573,6 +581,7 @@
 }
 
 .md-pre {
+  max-width: 100%;
   padding: 10px 12px;
   border-radius: var(--r-md);
   background: var(--bg-sunken);
