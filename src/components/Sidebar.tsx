@@ -2,10 +2,12 @@ import { useMemo, useState } from 'react';
 import { FileManager, type TreeNode } from '../services/FileManager';
 import { selectActiveProject, useStore } from '../state/store';
 import { formatRelativeTime } from '../core/utils';
+import { useProvider } from '../hooks/useProvider';
 import {
   FileGlyph,
   IconChevron,
   IconFolder,
+  IconPlay,
   IconPlus,
   IconSearch,
   IconTrash,
@@ -27,12 +29,31 @@ export function Sidebar() {
   const createFile = useStore((s) => s.createFile);
   const deleteFile = useStore((s) => s.deleteFile);
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);
+  const runProject = useStore((s) => s.runProject);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const isAgentBusy = useStore((s) => s.isAgentBusy);
+  const { isLive: providerLive, label: providerLabel, status: backendStatus } = useProvider();
 
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [projectsOpen, setProjectsOpen] = useState(true);
 
   const files = project?.files ?? [];
+
+  /** Newest first for the "Recent projects" list — display order only. */
+  const recentProjects = useMemo(
+    () => [...projects].sort((a, b) => b.updatedAt - a.updatedAt),
+    [projects],
+  );
+
+  /** Configured providers other than the active one — shown as fallbacks. */
+  const fallbacks = useMemo(
+    () =>
+      (backendStatus?.providers ?? []).filter(
+        (pr) => pr.configured && pr.id !== backendStatus?.activeProvider,
+      ),
+    [backendStatus],
+  );
 
   const filtered = useMemo(() => {
     if (!query.trim()) return files;
@@ -124,7 +145,7 @@ export function Sidebar() {
               aria-expanded={projectsOpen}
             >
               <IconChevron size={11} className={`tree__caret ${projectsOpen ? 'is-open' : ''}`} />
-              <span>Projects</span>
+              <span>Recent projects</span>
               <span className="sidebar__count">{projects.length}</span>
             </button>
             <button
@@ -139,7 +160,7 @@ export function Sidebar() {
 
           {projectsOpen && (
             <ul className="project-list">
-              {projects.map((p) => (
+              {recentProjects.map((p) => (
                 <li key={p.id}>
                   <div className={`project ${p.id === activeProjectId ? 'is-active' : ''}`}>
                     <button className="project__main" onClick={() => selectProject(p.id)}>
@@ -159,6 +180,16 @@ export function Sidebar() {
                         aria-hidden="true"
                       />
                     </button>
+                    {p.id === activeProjectId && !isAgentBusy && (
+                      <button
+                        className="project__run"
+                        onClick={() => runProject()}
+                        aria-label={`Run ${p.name}`}
+                        title="Build and run this project (⌘R)"
+                      >
+                        <IconPlay size={12} />
+                      </button>
+                    )}
                     <button
                       className="project__delete"
                       onClick={() => {
@@ -223,7 +254,37 @@ export function Sidebar() {
           </nav>
         </section>
 
-        {/* ---- Footer stats ---- */}
+        {/* ---- AI provider status (real backend state, click to configure) ---- */}
+        <section className="sidebar__section">
+          <button
+            className={`provider-card ${providerLive ? 'provider-card--live' : ''}`}
+            onClick={() => setSettingsOpen(true)}
+            title="Open provider settings"
+          >
+            <span
+              className={`provider-card__dot ${providerLive ? 'is-live' : ''}`}
+              aria-hidden="true"
+            />
+            <span className="provider-card__text">
+              <span className="provider-card__label">
+                {providerLive ? 'AI provider · active' : 'Simulated mode'}
+              </span>
+              <span className="provider-card__value">
+                {providerLive
+                  ? providerLabel
+                  : 'Connect a provider in Settings'}
+              </span>
+              {providerLive && fallbacks.length > 0 && (
+                <span className="provider-card__fallback">
+                  Fallback ready: {fallbacks.map((f) => f.label).join(', ')}
+                </span>
+              )}
+            </span>
+            <IconChevron size={12} className="provider-card__chev" />
+          </button>
+        </section>
+
+        {/* ---- Footer stats (real workspace data) ---- */}
         <footer className="sidebar__footer">
           <div className="stat">
             <span className="stat__value">{FileManager.totalLines(files).toLocaleString()}</span>
