@@ -9,7 +9,12 @@ import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { Toast } from './components/Toast';
 import { TopBar } from './components/TopBar';
+import { BuildAppMode } from './components/modes/BuildAppMode';
+import { ChatMode } from './components/modes/ChatMode';
+import { ImageMode } from './components/modes/ImageMode';
+import { VideoMode } from './components/modes/VideoMode';
 import { initProvider } from './services/registry';
+import { useModeStore } from './state/modeStore';
 import { useStore } from './state/store';
 import './App.css';
 
@@ -18,6 +23,7 @@ const MOBILE_PANES: ReadonlyArray<'chat' | 'code' | 'preview'> = ['chat', 'code'
 export default function App() {
   const init = useStore((s) => s.init);
   const mainTab = useStore((s) => s.mainTab);
+  const mode = useModeStore((s) => s.mode);
   const chatOpen = useStore((s) => s.chatOpen);
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const mobilePane = useStore((s) => s.mobilePane);
@@ -76,23 +82,48 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [saveProject, runProject, setSettingsOpen, setSidebarOpen]);
 
+  /* Multi-mode workspace: the coding agent keeps the full existing layout;
+     the new modes (Chat/Image/Video/Build App) render in a focused view.
+     Nothing below changes for the default 'agent' mode. */
+  const agentLike = mode === 'agent' || mode === 'buildapp';
+
   return (
     <div
-      className={`app ${sidebarOpen ? 'has-sidebar' : ''} ${chatOpen ? 'has-chat' : ''}`}
+      className={`app ${sidebarOpen && agentLike ? 'has-sidebar' : ''} ${chatOpen && agentLike ? 'has-chat' : ''}`}
       data-mobile-pane={safeMobilePane}
     >
       <ErrorBoundary label="Top bar">
         <TopBar />
       </ErrorBoundary>
-      <ErrorBoundary label="Sidebar">
-        <Sidebar />
-      </ErrorBoundary>
+      {agentLike && (
+        <ErrorBoundary label="Sidebar">
+          <Sidebar />
+        </ErrorBoundary>
+      )}
+      {!agentLike && (
+        <main className="mode-host">
+          <ErrorBoundary label={mode === 'chat' ? 'Chat mode' : mode === 'image' ? 'Image mode' : 'Video mode'}>
+            {mode === 'chat' && <ChatMode />}
+            {mode === 'image' && <ImageMode />}
+            {mode === 'video' && <VideoMode />}
+          </ErrorBoundary>
+        </main>
+      )}
+      {mode === 'buildapp' && (
+        <main className="mode-host">
+          <ErrorBoundary label="Build App mode">
+            <BuildAppMode />
+          </ErrorBoundary>
+        </main>
+      )}
+      {agentLike && (
       <ErrorBoundary label="Chat panel">
         <ChatPanel />
       </ErrorBoundary>
+      )}
 
       {/* Floating re-open button when the chat is collapsed (desktop only). */}
-      {!chatOpen && (
+      {agentLike && !chatOpen && (
         <button
           className="chat-reopen"
           onClick={() => setChatOpen(true)}
@@ -103,7 +134,7 @@ export default function App() {
         </button>
       )}
 
-      <main className={`workspace workspace--${mainTab}`}>
+      <main className={`workspace workspace--${mainTab}`} style={agentLike ? undefined : { display: 'none' }}>
         <div className="workspace__panes">
           {mainTab !== 'preview' && (
             <ErrorBoundary label="Code editor">

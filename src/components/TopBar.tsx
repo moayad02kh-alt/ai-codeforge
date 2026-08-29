@@ -11,6 +11,7 @@ import {
   IconSparkle,
   IconStop,
 } from './Icons';
+import { ModeSwitcher } from './ModeSwitcher';
 import './TopBar.css';
 
 export function TopBar() {
@@ -107,6 +108,8 @@ export function TopBar() {
           {live ? 'Live' : 'Simulated'}
         </span>
       </div>
+
+        <ModeSwitcher />
 
       <div className="topbar__right">
         <div className="segmented" role="tablist" aria-label="Workspace view">

@@ -256,6 +256,46 @@ export const Dots = () => (
   </span>
 );
 
+
+/** Image mode glyph. */
+export const IconImage = ({ size = 16, className, strokeWidth = 1.9 }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <circle cx="8.6" cy="8.6" r="1.7" />
+    <path d="M21 15.5l-4.4-4.4a1.4 1.4 0 0 0-2 0L5 20.7" />
+  </svg>
+);
+
+/** Video mode glyph. */
+export const IconFilm = ({ size = 16, className, strokeWidth = 1.9 }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
+    <path d="M7 4v16M17 4v16M2.5 9h4.5M2.5 15h4.5M17 9h4.5M17 15h4.5" />
+  </svg>
+);
+
 /** Language glyph shown next to files in the explorer. */
 export function FileGlyph({ language }: { language: string }) {
   const map: Record<string, { label: string; color: string }> = {

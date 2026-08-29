@@ -1,0 +1,46 @@
+.mode-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border-base, rgba(255, 255, 255, 0.1));
+}
+
+.mode-switcher__btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mode-switcher__btn:hover { opacity: 1; }
+.mode-switcher__btn.is-active {
+  background: var(--accent-base, #6c8cff);
+  color: #fff;
+  opacity: 1;
+  font-weight: 600;
+}
+.mode-switcher__busy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn-base, #f0b429);
+}
+
+@media (max-width: 900px) {
+  .mode-switcher__label { display: none; }
+  .mode-switcher__btn { padding: 6px 9px; }
+}

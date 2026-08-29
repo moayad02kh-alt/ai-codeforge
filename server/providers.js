@@ -33,7 +33,7 @@
  *
  * Returns '' when nothing usable is set. Never throws and never logs values.
  */
-function readEnvSecret(...names) {
+export function readEnvSecret(...names) {
   for (const name of names) {
     let value = process.env[name];
     if (value === undefined || value === null) continue;
