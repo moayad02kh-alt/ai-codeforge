@@ -138,6 +138,10 @@ export function TopBar() {
       </div>
 
       <div className="topbar__right">
+        {/* Agent-only view switcher. Non-agent modes have no workspace views,
+            and on phones it folds into the ⋯ menu below (CSS hides this bar
+            ≤640px) — it was wide enough to push Chat AI off-screen. */}
+        {mode === 'agent' && (
         <div className="segmented" role="tablist" aria-label="Workspace view">
           {(['code', 'split', 'preview'] as const).map((tab) => (
             <button
@@ -151,6 +155,7 @@ export function TopBar() {
             </button>
           ))}
         </div>
+        )}
 
         {isBusy ? (
           <button className="btn btn--danger" onClick={cancelRun}>
@@ -185,6 +190,24 @@ export function TopBar() {
                   setMainTab('preview');
                 }}
               >
+                {mode === 'agent' && (
+                  <>
+                    {(['code', 'split'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        className={`topbar__menu-item ${mainTab === tab ? 'is-active' : ''}`}
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setMainTab(tab);
+                        }}
+                      >
+                        <IconEye size={14} />
+                        <span>{tab === 'code' ? 'Code view' : 'Split view'}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
                 <IconEye size={14} />
                 <span>Open preview</span>
               </button>

@@ -28,11 +28,11 @@
   flex-shrink: 0;
 }
 
-/* Left cluster may compress on narrow phones; clip gracefully instead of
-   pushing the bar wider than the viewport. */
+/* The left cluster may compress on narrow phones, but it must NEVER clip:
+   a clipped Chat button looks like a missing feature. Any theoretical
+   residue is caught by the page-level overflow-x: clip instead. */
 .topbar__left {
   flex-shrink: 1;
-  overflow: hidden;
 }
 
 .topbar__divider {
@@ -286,7 +286,10 @@
 @media (max-width: 640px) {
   .badge { display: none; }
   .brand__name { display: none; }
-  .segmented__item { height: 28px; padding: 0 9px; font-size: 11.5px; }
+  /* Agent view switcher lives in the ⋯ menu on phones (Code/Split/Preview
+     entries, active state shown) — the inline bar cannot fit next to the
+     mode switcher without pushing Chat AI off-screen. */
+  .segmented { display: none; }
 }
 
 /* ---------------- View switcher (Code · Split · Preview) ---------------- */
@@ -330,5 +333,14 @@
   .segmented__item {
     height: 26px;
     padding: 0 9px;
+  }
+}
+
+/* Phones: the agent view switcher folds into the ⋯ menu (Code view /
+   Split view / Open preview). Declared after the .segmented layout block
+   above so the cascade cannot re-expand it. */
+@media (max-width: 640px) {
+  .topbar .segmented {
+    display: none;
   }
 }
