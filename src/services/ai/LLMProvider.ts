@@ -182,12 +182,14 @@ export class LLMProvider implements AIProvider {
       });
     };
 
-    // Transient upstream statuses (Gemini "high demand" 503 etc.). The server
-    // already retries these internally; this single client-side retry covers
-    // the case where server-side retries were exhausted during a sustained
-    // upstream spike. 429 is excluded — the server honours Retry-After and
-    // our own rate limiter needs the minute window to elapse anyway.
-    const TRANSIENT_UPSTREAM = new Set([500, 502, 503, 504]);
+    // Transient upstream statuses. The server already retries the 5xx ones
+    // internally; this single client-side retry covers the case where
+    // server-side retries were exhausted during a sustained upstream spike.
+    // 429 (vendor quota, e.g. Gemini free-tier 20 req/min) is included with
+    // a LONGER delay: the per-minute window resets on its own, so waiting
+    // once is usually enough. Our own rate limiter (code RATE_LIMITED) is
+    // never retried — only vendor errors carry UPSTREAM_ERROR.
+    const TRANSIENT_UPSTREAM = new Set([429, 500, 502, 503, 504]);
 
     for (let attempt = 1; ; attempt += 1) {
       let res: Response;
@@ -224,8 +226,12 @@ export class LLMProvider implements AIProvider {
         const isUpstream = code === 'UPSTREAM_ERROR' || code === 'UPSTREAM_TIMEOUT' || code.startsWith('HTTP_5');
         const isTransient = TRANSIENT_UPSTREAM.has(res.status) && isUpstream;
         if (isTransient && attempt === 1 && !signal?.aborted) {
-          console.warn(`[CodeForge] Upstream ${res.status} (${code}) — retrying once in 1.2s`);
-          await new Promise((r) => setTimeout(r, 1200));
+          // Vendor quota 429 (UPSTREAM_ERROR): the per-minute window resets
+          // on its own — wait long enough to actually clear it. 5xx overload
+          // spikes recover in seconds, so a short delay suffices there.
+          const delay = res.status === 429 ? 15_000 : 1_200;
+          console.warn(`[CodeForge] Upstream ${res.status} (${code}) — retrying once in ${Math.round(delay / 1000)}s`);
+          await new Promise((r) => setTimeout(r, delay));
           continue;
         }
         // Provider not configured -> clear message so orchestrator can fallback or show hint.

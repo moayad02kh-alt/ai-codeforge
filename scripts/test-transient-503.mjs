@@ -7,7 +7,7 @@
  * Reproduces it EXACTLY (a scripted Gemini wire-format vendor returning the
  * real 503 body) and proves the fix:
  *
- *   1. Server-side: transient 429/5xx are retried with backoff inside the
+ *   1. Server-side: transient 5xx are retried with backoff inside the
  *      function (fetchUpstreamWithRetries) — 2 transient 503s + 1 success
  *      must complete the run with the file change APPLIED.
  *   2. Client-side: when upstream stays down, the error must be classified
@@ -15,6 +15,9 @@
  *      "No AI provider is configured" — and retried exactly once.
  *   3. A bare 503 with no code (real "backend has no provider") must STILL
  *      classify as PROVIDER_NOT_CONFIGURED (no behaviour regression).
+ *   4. Vendor quota 429 (free-tier 20 req/min): NOT retried in-function
+ *      (that would burn quota); the client waits out the per-minute window
+ *      once (15s) and the run then completes.
  *
  * Run: npx vite-node scripts/test-transient-503.mjs
  */
@@ -51,7 +54,21 @@ const vendor = createServer((req, res) => {
   req.on('end', () => {
     vendorHits += 1;
 
-    if (mode === 'always503' || vendorHits <= 2) {
+    // Quota scenario: a single hard 429 (free-tier 20 req/min), then fine.
+    if (mode === 'quota429') {
+      if (vendorHits === 1) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: {
+            code: 429,
+            message: 'You exceeded your current quota... Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20',
+            status: 'RESOURCE_EXHAUSTED',
+          },
+        }));
+        return;
+      }
+      // hit >= 2: fall through to the success response below
+    } else if (mode === 'always503' || vendorHits <= 2) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(HIGH_DEMAND_503);
       return;
@@ -173,6 +190,34 @@ console.log('\n─── Transient Gemini 503 (the exact production failure) ─
   }
   check('bare 503 (no code) still classifies as PROVIDER_NOT_CONFIGURED', threw?.code === 'PROVIDER_NOT_CONFIGURED', threw?.code);
   bare.close();
+}
+
+// 4. Vendor quota 429 → NO in-function retry (quota preservation); the
+//    client waits out the per-minute window once (15s) and completes.
+{
+  vendorHits = 0;
+  mode = 'quota429';
+  const hitsBefore = vendorHits;
+  const t0 = Date.now();
+  let result = null;
+  let threw = null;
+  try {
+    result = await new LLMProvider({ baseUrl: API, provider: 'gemini' }).generate({
+      prompt: 'recolour the page (quota 429 case)',
+      files: files(),
+      history: [],
+      projectName: 'T503',
+      diagnostics: [],
+    });
+  } catch (e) {
+    threw = e;
+  }
+  check('quota 429 recovered by the delayed client retry', threw === null, threw?.message?.slice(0, 160));
+  const css = result?.files.find((f) => f.path === 'styles/main.css');
+  check('update_file APPLIED after quota recovery', css?.content === 'body { color: emerald; }\n', css?.content);
+  check('server did NOT burn in-function retries on quota 429 (2 vendor calls)', vendorHits - hitsBefore === 2, `hits: ${vendorHits - hitsBefore}`);
+  check('client actually waited out the quota window (>=15s)', Date.now() - t0 >= 15000, `${Date.now() - t0}ms`);
+  mode = 'recover';
 }
 
 console.log('\n──────────────────────────────────────────────────────');

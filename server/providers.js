@@ -67,19 +67,24 @@ function firstPresentEnv(names) {
 /* ------------------------------------------------------------------ */
 /* Transient upstream failure retry                                    */
 /*                                                                    */
-/* Gemini (and other vendors) intermittently return 429/5xx — most    */
-/* commonly 503 UNAVAILABLE "This model is currently experiencing    */
-/* high demand". These are temporary: retrying a few times with      */
-/* backoff rescues the run. Retries happen HERE, server-side, so the */
-/* API key never leaves the function and every client benefits.      */
-/*                                                                    */
+/* Gemini (and other vendors) intermittently return 5xx — most commonly   */
+/* 503 UNAVAILABLE "This model is currently experiencing high demand".    */
+/* These are temporary: retrying a few times with backoff rescues the     */
+/* run. Retries happen HERE, server-side, so the API key never leaves     */
+/* the function and every client benefits.                                */
+/*                                                                        */
+/* 429 is deliberately NOT retried in-function: on Gemini it means a      */
+/* quota/rate limit (e.g. free-tier 20 requests/min). In-function retries */
+/* would burn extra quota without waiting long enough for the window to   */
+/* reset — the client does ONE delayed retry instead (see LLMProvider).   */
+/*                                                                        */
 /* Budgets are env-tunable and deliberately bounded so that the      */
 /* worst case stays inside the Vercel function limit (maxDuration    */
 /* 60): a retry is only started when the time budget still allows    */
 /* it, and vendor Retry-After hints are honoured (capped).           */
 /* ------------------------------------------------------------------ */
 
-const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
+const TRANSIENT_STATUSES = new Set([500, 502, 503, 504]);
 
 function isTransientUpstream(status) {
   return TRANSIENT_STATUSES.has(status);
