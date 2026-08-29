@@ -386,7 +386,7 @@ const gemini = {
   // (AIza, AQ., etc.), trims whitespace/quotes, and ignores example text.
   isConfigured: () => Boolean(readEnvSecret(...GEMINI_KEY_NAMES)),
 
-  async chat({ messages, model, temperature, jsonMode, signal }) {
+  async chat({ messages, model, temperature, jsonMode, signal, search, images }) {
     const base = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
     const chosen = model || process.env.GEMINI_MODEL || gemini.defaultModel;
 
@@ -397,6 +397,19 @@ const gemini = {
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
       }));
+
+    /* NEW (Chat AI only): attach image attachments as inlineData parts on the
+     * last user turn, so questions like "What is in this image?" work through
+     * Gemini's native multimodal input. The coding agent never sends images. */
+    if (Array.isArray(images) && images.length > 0) {
+      const imageParts = images.map((im) => ({ inlineData: { mimeType: im.mimeType, data: im.data } }));
+      for (let i = contents.length - 1; i >= 0; i--) {
+        if (contents[i].role === 'user') {
+          contents[i] = { role: 'user', parts: [...imageParts, ...contents[i].parts] };
+          break;
+        }
+      }
+    }
 
     // Detect if this is a repair request by looking for repair-specific system prompt
     const isRepair = system.toLowerCase().includes('automatic repair subsystem');
@@ -424,6 +437,9 @@ const gemini = {
       body: JSON.stringify({
         contents: contents.length ? contents : [{ role: 'user', parts: [{ text: 'Continue.' }] }],
         ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+        // NEW (Chat AI only): Google's official web-grounding tool. Never
+        // combined with jsonMode (the agent never requests search).
+        ...(search === true && !jsonMode ? { tools: [{ google_search: {} }] } : {}),
         generationConfig: {
           temperature: temperature ?? 0.2,
           maxOutputTokens: Number(process.env.GEMINI_MAX_TOKENS || 16384),
@@ -498,6 +514,22 @@ const gemini = {
         completionTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
       },
       model: chosen,
+      // NEW (Chat AI only): web-grounding metadata. grounded=true means the
+      // model actually used the search tool; sources are the real citations
+      // returned by Google — never fabricated by us.
+      ...(search === true
+        ? (() => {
+            const gm = data.candidates?.[0]?.groundingMetadata;
+            const seen = new Set();
+            const sources = (gm?.groundingChunks ?? [])
+              .map((c) => c?.web)
+              .filter((w) => w && w.uri)
+              .map((w) => ({ title: w.title || w.uri, uri: w.uri }))
+              .filter((s) => (seen.has(s.uri) ? false : (seen.add(s.uri), true)))
+              .slice(0, 8);
+            return { grounded: Boolean(gm), sources };
+          })()
+        : {}),
     };
   },
 };

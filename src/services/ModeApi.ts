@@ -22,6 +22,16 @@ export interface ModeFailover {
 export interface ChatResult extends ModeFailover {
   text: string;
   model?: string;
+  /** Web-search grounding: true when the model actually used the search tool. */
+  grounded?: boolean;
+  /** Real citations returned by the provider's grounding metadata. */
+  sources?: Array<{ title: string; uri: string }>;
+}
+
+/** An image attachment sent with a chat message (client-downscaled JPEG/PNG/WebP base64). */
+export interface ChatImage {
+  mimeType: string;
+  data: string;
 }
 
 export interface ModeProviderStatus {
@@ -110,14 +120,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 const CHAT_PATH = '/api/agent/chat';
 
 export const ModeApi = {
-  /** General conversation — plain prose through the provider chain. */
+  /**
+   * General conversation — plain prose through the provider chain.
+   * `opts.images` adds image understanding (Gemini inlineData); `opts.search`
+   * enables the provider's official web-grounding. Both are optional and
+   * default to plain chat behaviour.
+   */
   async chat(
     messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
     signal?: AbortSignal,
+    opts?: { images?: ChatImage[]; search?: boolean },
   ): Promise<ChatResult> {
     const data = await request<ChatResult>(CHAT_PATH, {
       method: 'POST',
-      body: JSON.stringify({ messages: messages.slice(-16) }),
+      body: JSON.stringify({
+        messages: messages.slice(-16),
+        ...(opts?.images?.length ? { images: opts.images } : {}),
+        ...(opts?.search ? { search: true } : {}),
+      }),
       signal,
     });
     if (!data.text) {

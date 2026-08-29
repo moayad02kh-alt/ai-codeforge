@@ -316,3 +316,10 @@ export function FileGlyph({ language }: { language: string }) {
     </span>
   );
 }
+
+export const IconCamera = ({ size = 16, className, strokeWidth = 1.9 }: IconProps) => (
+  <svg {...base(size, strokeWidth)} className={className} aria-hidden="true">
+    <path d="M4 8h2.5L8.6 5.5h6.8L17.5 8H20a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" />
+    <circle cx="12" cy="13.5" r="3.5" />
+  </svg>
+);

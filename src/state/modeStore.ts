@@ -12,6 +12,7 @@ import { create } from 'zustand';
 import {
   ModeApi,
   ModeApiError,
+  type ChatImage,
   type ModeProviderStatus,
   type ProviderFailoverAttempt,
 } from '../services/ModeApi';
@@ -37,6 +38,12 @@ export interface ChatEntry {
   providerLabel?: string;
   /** Failover notices, e.g. "Gemini unavailable — using Groq". */
   failoverNotes?: string[];
+  /** Real web citations returned by the provider's grounding (search on). */
+  sources?: Array<{ title: string; uri: string }>;
+  /** The message was asked with web search enabled. */
+  usedSearch?: boolean;
+  /** The message was asked with an image attached. */
+  hadImage?: boolean;
   isError?: boolean;
 }
 
@@ -101,7 +108,10 @@ interface ModeState {
   chatBusy: boolean;
   chatStyle: ChatStyle;
   setChatStyle: (style: ChatStyle) => void;
-  sendChat: (prompt: string) => Promise<void>;
+  sendChat: (
+    prompt: string,
+    opts?: { images?: ChatImage[]; search?: boolean },
+  ) => Promise<void>;
   clearChat: () => void;
 
   /* image mode */
@@ -154,7 +164,7 @@ export const useModeStore = create<ModeState>((set, get) => ({
   chatBusy: false,
   chatStyle: 'fast',
   setChatStyle: (chatStyle) => set({ chatStyle }),
-  sendChat: async (prompt) => {
+  sendChat: async (prompt, opts) => {
     const text = prompt.trim();
     if (!text || get().chatBusy) return;
 
@@ -176,7 +186,10 @@ export const useModeStore = create<ModeState>((set, get) => ({
               ...outgoing.slice(-15),
             ]
           : outgoing;
-      const result = await ModeApi.chat(payload);
+      const result = await ModeApi.chat(payload, undefined, {
+        images: opts?.images,
+        search: opts?.search,
+      });
       const reply: ChatEntry = {
         id: ModeApi.newId(),
         role: 'assistant',
@@ -184,6 +197,10 @@ export const useModeStore = create<ModeState>((set, get) => ({
         at: Date.now(),
         providerLabel: PROVIDER_LABELS[result.provider ?? ''] ?? result.provider ?? 'AI',
         failoverNotes: failoverNotes(result.failover, result.provider),
+        // Honest search metadata straight from the provider's grounding.
+        usedSearch: opts?.search === true,
+        sources: result.grounded ? (result.sources ?? []) : [],
+        hadImage: Boolean(opts?.images?.length),
       };
       set({ chat: [...history, reply] });
 

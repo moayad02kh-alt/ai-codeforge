@@ -187,17 +187,60 @@ async function handleChat(req, res, { jsonMode }) {
     return send(res, 400, { error: 'Body must include a non-empty "messages" array' });
   }
 
+  /* ---- NEW: Chat-only capabilities (image understanding, web search) ----
+   * Only the PLAIN chat path honours these; the coding agent's generate/
+   * repair calls (jsonMode: true) never send them, and even if a client
+   * did, the jsonMode guard makes the flags inert there.
+ * Images ride as Gemini inlineData parts; search uses Google's official
+   * grounding tool. Both are Gemini-adapter features, so the chain is
+   * narrowed honestly (with a clear error) instead of silently dropping
+   * the attachment or answering without the requested capability. */
+  let wantsSearch = false;
+  let chatImages = [];
+  if (!jsonMode) {
+    wantsSearch = body.search === true;
+    const rawImages = Array.isArray(body.images) ? body.images : [];
+    chatImages = rawImages
+      .filter(
+        (im) =>
+          im &&
+          typeof im === 'object' &&
+          typeof im.data === 'string' &&
+          im.data.length > 0 &&
+          ['image/png', 'image/jpeg', 'image/webp'].includes(im.mimeType),
+      )
+      .slice(0, 4)
+      .map((im) => ({ mimeType: im.mimeType, data: im.data }));
+    if (rawImages.length > 0 && chatImages.length === 0) {
+      return send(res, 400, {
+        error: 'Unsupported image attachment — please use PNG, JPEG or WebP.',
+        code: 'UNSUPPORTED_IMAGE',
+      });
+    }
+  }
+
   // Ordered failover chain of CONFIGURED providers (bounded: at most one
   // round of attempts): preferred provider (explicit request or AI_PROVIDER)
   // first, then the product default Gemini → Groq → OpenRouter Free, then
   // any other configured provider as a last resort.
-  const chain = providerChain(body.provider);
+  let chain = providerChain(body.provider);
   if (!chain.length) {
     return send(res, 503, {
       error: 'No AI provider is configured on the server.',
       hint: 'Set GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY (or another provider key) and redeploy.',
       code: 'PROVIDER_NOT_CONFIGURED',
     });
+  }
+  if (wantsSearch || chatImages.length) {
+    chain = chain.filter((p) => p.id === 'gemini');
+    if (!chain.length) {
+      return send(res, 400, {
+        error: wantsSearch
+          ? 'Web Search requires the Gemini provider, which is not configured on this server.'
+          : 'Image understanding requires the Gemini provider, which is not configured on this server.',
+        code: 'GEMINI_REQUIRED',
+      });
+    }
   }
 
   // Mode prompts (e.g. the Chat AI system prompt) ride as a system message;
@@ -232,6 +275,10 @@ async function handleChat(req, res, { jsonMode }) {
           temperature,
           jsonMode,
           signal: controller.signal,
+          // NEW chat-only capabilities (undefined unless the plain chat path
+          // received them; the agent routes never send them).
+          ...(wantsSearch ? { search: true } : {}),
+          ...(chatImages.length ? { images: chatImages } : {}),
         });
 
         if (attempts.length) result.failover = attempts;
@@ -242,6 +289,9 @@ async function handleChat(req, res, { jsonMode }) {
           provider: provider.id,
           failover: result.failover,
           durationMs: Date.now() - started,
+          // Web-search grounding metadata (only present when the client
+          // asked for search and the model actually grounded the answer).
+          ...(result.grounded ? { grounded: true, sources: result.sources ?? [] } : {}),
         });
         return;
       } catch (err) {
